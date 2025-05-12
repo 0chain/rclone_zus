@@ -9,7 +9,7 @@
 [Installation](https://rclone.org/install/) |
 [Forum](https://forum.rclone.org/)
 
-# {{< icon "fa-solid fa-cloud-bolt" >}} Zus
+## Züs Overview
 
 [Zus](https://zus.network/) is the first S3-compatible storage platform that’s both ACID-compliant and operates on a zero-knowledge network — meaning you no longer need additional services like AWS Athena or GuardDuty to secure or query your data.
 Our goal is to deliver 10x value to customers through:
