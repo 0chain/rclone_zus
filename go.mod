@@ -1,4 +1,4 @@
-module github.com/hitenjain14/rclone_zus
+module github.com/0chain/rclone_zus
 
 go 1.23.4
 

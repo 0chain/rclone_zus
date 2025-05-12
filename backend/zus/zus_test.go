@@ -4,7 +4,7 @@ package zus_test
 import (
 	"testing"
 
-	"github.com/hitenjain14/rclone_zus/backend/zus"
+	"github.com/0chain/rclone_zus/backend/zus"
 	"github.com/rclone/rclone/fstest/fstests"
 )
 
