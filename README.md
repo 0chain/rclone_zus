@@ -38,6 +38,30 @@ Our goal is to deliver 10x value to customers through:
 
 ## Configuration
 
+**Prerequisites**
+
+- Have a wallet and allocation on Züs. Allocation can be created through [Blimp](blimp.software) or [Vult](vult.network)
+    - Unsure how to recover a wallet and allocation using the CLI, check steps 1-3 here: https://docs.zus.network/zus-docs/clis
+- Have your wallet.json in ~/.zcn
+```json
+{"client_id":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"client_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"keys":[{"public_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+"private_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}],
+"mnemonics":"xxxx xxxx xxxx xxxxx",
+"version":"1.0","date_created":"2023-05-03T12:44:46+05:30","nonce":0,"is_split":false}
+```
+- Have your config.yaml in ~/.zcn
+```yaml
+block_worker: https://mainnet.zus.network/dns
+signature_scheme: bls0chain
+min_submit: 50 # in percentage
+min_confirmation: 50 # in percentage
+confirmation_chain_length: 3
+```
+
+**Set Up**
+
 Here is an example of how to make a `zus` remote called `myZus`.
 
 First run
@@ -52,7 +76,7 @@ n) New remote
 s) Set configuration password
 q) Quit config
 n/s/q> n
-name> mySia
+name> myZus
 Type of storage to configure.
 Enter a string value. Press Enter for the default ("").
 Choose a number from below, or type in your own value
@@ -63,7 +87,7 @@ Choose a number from below, or type in your own value
 Storage> zus
 Zus Allocation ID - allocation ID.
 allocation_id>
-Config Directory - directory to read config files(defaults to ~/.zcn).
+Config Directory - directory to read config files (defaults to ~/.zcn; make sure to use the correct windows path for  `C:\Users\Username\.zcn`).
 config_dir>
 Work Directory - directory to read/write files.
 work_dir>
@@ -86,21 +110,40 @@ d) Delete this remote
 y/e/d> y
 ```
 
+Make sure your rclone.conf file is created.
+- For Windows, check %APPDATA%\rclone\rclone.conf. If you downloaded the rclone.exe, you can place the rclone.conf in the same directory as the .exe.
+- For macOS/Linux, check ~/.config/rclone/rclone.conf
+
+Example rclone.conf :
+```ini
+[myZus]
+type = zus
+allocation_id = <allocation_id>
+```
+
 Once configured you can then use `rclone` like this,
 
 See top level directories
 
-    rclone lsd remote:
+    rclone lsd myZus:
 
-Make a new directory
+Output example:
 
-    rclone mkdir remote:directory
+```
+  -1 2025-05-14 15:27:59        -1 Encrypted
+```
+
+Make a new directory (This example shows new directory name as "directory")
+
+    rclone mkdir myZus:directory
 
 List the contents of a directory
 
-    rclone ls remote:directory
+    rclone ls myZus:directory
 
 Sync `/home/local/directory` to the remote path, deleting any
 excess files in the path.
 
-    rclone sync --interactive /home/local/directory remote:directory
+    rclone sync --interactive /home/local/directory myZus:directory
+
+You can also check your allocation in the Blimp and Vult UI. Files should be in a folder named "directory".
