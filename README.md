@@ -38,12 +38,12 @@ Our goal is to deliver 10x value to customers through:
 
 ## Configuration
 
-**Prerequisite**
+**Prerequisites**
 
 - Have a wallet and allocation on Züs. Allocation can be created through [Blimp](blimp.software) or [Vult](vult.network)
     - Unsure how to recover a wallet and allocation using the CLI, check steps 1-3 here: https://docs.zus.network/zus-docs/clis
 - Have your wallet.json in ~/.zcn
-```
+```json
 {"client_id":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 "client_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 "keys":[{"public_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -52,7 +52,7 @@ Our goal is to deliver 10x value to customers through:
 "version":"1.0","date_created":"2023-05-03T12:44:46+05:30","nonce":0,"is_split":false}
 ```
 - Have your config.yaml in ~/.zcn
-```
+```yaml
 block_worker: https://mainnet.zus.network/dns
 signature_scheme: bls0chain
 min_submit: 50 # in percentage
@@ -87,7 +87,7 @@ Choose a number from below, or type in your own value
 Storage> zus
 Zus Allocation ID - allocation ID.
 allocation_id>
-Config Directory - directory to read config files (defaults to ~/.zcn; make sure to use the correct windows path for C:\Users\Username\.zcn).
+Config Directory - directory to read config files (defaults to ~/.zcn; make sure to use the correct windows path for  `C:\Users\Username\.zcn`).
 config_dir>
 Work Directory - directory to read/write files.
 work_dir>
@@ -115,10 +115,10 @@ Make sure your rclone.conf file is created.
 - For macOS/Linux, check ~/.config/rclone/rclone.conf
 
 Example rclone.conf :
-```
+```ini
 [myZus]
 type = zus
-allocation_id = [allocation_id]
+allocation_id = <allocation_id>
 ```
 
 Once configured you can then use `rclone` like this,
