@@ -23,6 +23,17 @@ import (
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/lib/batcher"
+)
+
+var (
+	// batcher default options
+	defaultBatcherOptions = batcher.Options{
+		MaxBatchSize: 50,
+		DefaultTimeoutSync: 500 * time.Millisecond,
+		DefaultTimeoutAsync: 5 * time.Second,
+		DefaultBatchSizeAsync: 100,
+	}
 )
 
 type Options struct {
@@ -31,6 +42,9 @@ type Options struct {
 	Encrypt      bool   `config:"encrypt"`
 	WorkDir      string `config:"work_dir"`
 	SdkLogLevel  int    `config:"sdk_log_level"`
+	BatchMode    string `config:"batch_mode"`
+	BatchTimeout time.Duration `config:"batch_timeout"`
+	BatchSize    int    `config:"batch_size"`
 }
 
 type Fs struct {
@@ -40,6 +54,7 @@ type Fs struct {
 	opts     Options      // parsed options
 	features *fs.Features // optional features
 	alloc    *sdk.Allocation
+	batcher *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations
 }
 
 func init() {
@@ -47,7 +62,7 @@ func init() {
 		Name:        "zus",
 		Description: "Zus Decentralized Storage",
 		NewFs:       NewFs,
-		Options: []fs.Option{
+		Options: append([]fs.Option{
 			{
 				Name: "allocation_id",
 				Help: "Allocation ID to use for this remote",
@@ -73,7 +88,7 @@ func init() {
 				Default:  0,
 				Advanced: true,
 			},
-		},
+		}, defaultBatcherOptions.FsOptions("zus")...),
 	})
 }
 
@@ -105,6 +120,15 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		ReadMimeType:            true,
 		WriteMimeType:           true,
 	}).Fill(ctx, f)
+
+	batcherOptions := defaultBatcherOptions
+	batcherOptions.Mode = f.opts.BatchMode
+	batcherOptions.Size = f.opts.BatchSize
+	batcherOptions.Timeout = f.opts.BatchTimeout
+	f.batcher, err = batcher.New(ctx, f, f.commitBatch, batcherOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	if f.opts.ConfigDir == "" {
 		f.opts.ConfigDir, err = getDefaultConfigDir()
@@ -574,7 +598,13 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 	if toUpdate {
 		opRequest.OperationType = constants.FileOperationUpdate
 	}
-	err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+
+	// If the batcher is enabled, we commit the operation through the batcher
+	if o.fs.batcher.Batching() {
+		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
+	} else {
+		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	}
 	if err != nil {
 		return err
 	}
