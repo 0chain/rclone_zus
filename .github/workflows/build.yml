@@ -1,0 +1,54 @@
+name: rclone Build
+
+on:
+  push:
+    branches:
+      - feat/rclone-build
+
+jobs:
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build for Linux
+        run: make build-linux
+
+      - name: Upload Linux Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-linux
+          path: ./rclone
+
+  build-windows:
+    name: Build Windows Binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install MinGW for Windows build
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build for Windows
+        run: make build-windows
+
+      - name: Upload Windows Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-windows
+          path: ./rclone.exe
