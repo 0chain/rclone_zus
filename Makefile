@@ -13,11 +13,11 @@ build-windows:
 
 # for Intel Mac binary
 build-mac-amd:
-	CGO_ENABLED=0 go build -x -v -tags bn256 -o rclone rclone.go 
+	CGO_ENABLED=1 go build -x -v -tags bn256 -o rclone rclone.go 
 
 # for Apple Silicon
 build-mac-arm:
-	CGO_ENABLED=0 go build -x -v -tags bn256 -o rclone rclone.go
+	CGO_ENABLED=1 go build -x -v -tags bn256 -o rclone rclone.go
 
 # build on windows os
 build-windows-native:
