@@ -38,13 +38,14 @@ jobs:
 
   build-mac-amd:
     name: Build macOS (Intel)
-    runs-on: macos-latest
+    runs-on: macos-13
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+      - run: go clean -cache -modcache -testcache
       - run: make build-mac-amd
       - uses: actions/upload-artifact@v4
         with:
@@ -53,13 +54,14 @@ jobs:
 
   build-mac-arm:
     name: Build macOS (Apple Silicon)
-    runs-on: macos-latest
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+      - run: go clean -cache -modcache -testcache
       - run: make build-mac-arm
       - uses: actions/upload-artifact@v4
         with:
