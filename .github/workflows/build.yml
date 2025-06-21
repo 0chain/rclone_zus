@@ -11,88 +11,57 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-
-      - name: Build for Linux
-        run: make build-linux
-
-      - name: Upload Linux Binary
-        uses: actions/upload-artifact@v4
+      - run: make build-linux
+      - uses: actions/upload-artifact@v4
         with:
           name: rclone-linux
           path: ./rclone
 
   build-windows:
     name: Build Windows Binary
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-
-      - name: Install MinGW for Windows build
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64
-
-      - name: Build for Windows
-        run: make build-windows
-
-      - name: Upload Windows Binary
-        uses: actions/upload-artifact@v4
+      - run: make build-windows-native
+      - uses: actions/upload-artifact@v4
         with:
           name: rclone-windows
           path: ./rclone.exe
 
-  build-mac:
-    name: Build Intel Mac binary
-    runs-on: ubuntu-latest
+  build-mac-amd:
+    name: Build macOS (Intel)
+    runs-on: macos-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-
-      - name: Build for Intel Mac binary
-        run: make build-mac
-
-      - name: Upload Intel Mac binary
-        uses: actions/upload-artifact@v4
+      - run: make build-mac-amd
+      - uses: actions/upload-artifact@v4
         with:
-          name: rclone-mac
+          name: rclone-mac-amd64
           path: ./rclone
 
   build-mac-arm:
-    name: Build Mac Apple Silicon binary
-    runs-on: ubuntu-latest
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-
-      - name: Build for Apple Silicon
-        run: make build-mac-arm
-
-      - name: Upload Mac Apple Silicon 
-        uses: actions/upload-artifact@v4
+      - run: make build-mac-arm
+      - uses: actions/upload-artifact@v4
         with:
-          name: rclone-mac-arm
+          name: rclone-mac-arm64
           path: ./rclone

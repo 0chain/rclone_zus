@@ -12,9 +12,13 @@ build-windows:
 	go build -x -v -tags bn256 -o rclone.exe rclone.go
 
 # for Intel Mac binary
-build-mac:
-	GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -x -v -tags bn256 -o rclone rclone.go 
+build-mac-amd:
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -x -v -tags bn256 -o rclone rclone.go 
 
 # for Apple Silicon
 build-mac-arm:
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -x -v -tags bn256 -o rclone rclone.go
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -x -v -tags bn256 -o rclone rclone.go
+
+# build on windows os
+build-windows-native:
+	CGO_ENABLED=1 go build -x -v -tags bn256 -o rclone.exe rclone.go
