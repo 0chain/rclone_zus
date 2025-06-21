@@ -52,3 +52,47 @@ jobs:
         with:
           name: rclone-windows
           path: ./rclone.exe
+
+  build-mac:
+    name: Build Intel Mac binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build for Intel Mac binary
+        run: make build-mac
+
+      - name: Upload Intel Mac binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-mac
+          path: ./rclone
+
+  build-mac-arm:
+    name: Build Mac Apple Silicon binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build for Apple Silicon
+        run: make build-mac-arm
+
+      - name: Upload Mac Apple Silicon 
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-mac-arm
+          path: ./rclone
