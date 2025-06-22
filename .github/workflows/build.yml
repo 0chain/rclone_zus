@@ -25,6 +25,9 @@ jobs:
           mkdir -p ~/.zcn
           echo "${{ secrets.ZCN_WALLET_JSON }}" > ~/.zcn/wallet.json
           echo "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+      - name: Validate wallet.json
+        run: |
+          cat ~/.zcn/wallet.json | jq empty
 
       - name: Setup rclone Configuration
         run: |
