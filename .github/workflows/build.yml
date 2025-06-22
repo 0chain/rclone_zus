@@ -115,34 +115,105 @@ jobs:
           path: ./rclone.exe
 
 
-  # build-mac-amd:
-  #   name: Build macOS (Intel)
-  #   runs-on: macos-13
+  build-mac-amd:
+    name: Build macOS (Intel)
+    runs-on: macos-13
 
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-go@v5
-  #       with:
-  #         go-version: '1.22'
-  #     - run: go clean -cache -modcache -testcache
-  #     - run: make build-mac-amd
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: rclone-mac-amd64
-  #         path: ./rclone
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go clean -cache -modcache -testcache
+      - run: make build-mac-amd
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        run: |
+          mkdir -p ~/.zcn
+           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
+           printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
 
-  # build-mac-arm:
-  #   name: Build macOS (Apple Silicon)
-  #   runs-on: macos-14
+      - name: Setup rclone Configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
 
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-go@v5
-  #       with:
-  #         go-version: '1.22'
-  #     - run: go clean -cache -modcache -testcache
-  #     - run: make build-mac-arm
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: rclone-mac-arm64
-  #         path: ./rclone
+      - name: Funcionality Test
+        run: |
+          # Create a dummy file
+          echo "This is a test file for Züs upload." > mac_intel.txt
+          
+          echo "Upload the dummy file to Züs"
+          ./rclone copy mac_intel.txt automation:workflow
+
+          echo "List the uploaded file"
+          echo "Listing uploaded file:"
+          ./rclone lsf automation:workflow
+
+          # Verify file exists
+          FILE_FOUND=$(./rclone lsf automation:workflow | grep "^mac_intel.txt$" || true)
+          if [ -z "$FILE_FOUND" ]; then
+            echo "File not found on remote!"
+            exit 1
+          else
+            echo "File verified: $FILE_FOUND"
+          fi
+
+          echo "Delete the uploaded file"
+          ./rclone delete  automation:workflow
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rclone-mac-amd64
+          path: ./rclone
+
+  build-mac-arm:
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go clean -cache -modcache -testcache
+      - run: make build-mac-arm
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        run: |
+          mkdir -p ~/.zcn
+           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
+           printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+
+      - name: Setup rclone Configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+      - name: Funcionality Test
+        run: |
+          # Create a dummy file
+          echo "This is a test file for Züs upload." > mac_arm.txt
+          
+          echo "Upload the dummy file to Züs"
+          ./rclone copy mac_arm.txt automation:workflow
+
+          echo "List the uploaded file"
+          echo "Listing uploaded file:"
+          ./rclone lsf automation:workflow
+
+          # Verify file exists
+          FILE_FOUND=$(./rclone lsf automation:workflow | grep "^mac_arm.txt$" || true)
+          if [ -z "$FILE_FOUND" ]; then
+            echo "File not found on remote!"
+            exit 1
+          else
+            echo "File verified: $FILE_FOUND"
+          fi
+
+          echo "Delete the uploaded file"
+          ./rclone delete  automation:workflow
+
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rclone-mac-arm64
+          path: ./rclone
