@@ -25,24 +25,35 @@ jobs:
           mkdir -p ~/.zcn
            printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
            printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
-      - name: Upload wallet.json for debug
-        uses: actions/upload-artifact@v4
-        with:
-          name: wallet-debug
-          path: ~/.zcn/wallet.json
-      - name: Validate wallet.json
-        run: |
-          cat ~/.zcn/wallet.json | jq empty
 
       - name: Setup rclone Configuration
         run: |
           mkdir -p ~/.config/rclone
           printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
 
-      - name: Functionality Test (Push and List File)
+      - name: Funcionality Test
         run: |
+          # Create a dummy file
+          echo "This is a test file for Züs upload." > linux.txt
+      
+          # Upload the dummy file to Züs
+          ./rclone copy linux.txt automation:workflow
+      
+          # List the uploaded file
           echo "Listing uploaded file:"
           ./rclone lsf automation:workflow
+      
+          # Verify file exists
+          FILE_FOUND=$(./rclone lsf automation:workflow | grep "^linux.txt$" || true)
+          if [ -z "$FILE_FOUND" ]; then
+            echo "File not found on remote!"
+            exit 1
+          else
+            echo "File verified: $FILE_FOUND"
+          fi
+      
+          # Delete the uploaded file
+          ./rclone delete  automation:workflow
 
       - name: Upload Built Binary
         uses: actions/upload-artifact@v4
