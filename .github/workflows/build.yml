@@ -35,14 +35,14 @@ jobs:
         run: |
           # Create a dummy file
           echo "This is a test file for Züs upload." > linux.txt
-      
-          # Upload the dummy file to Züs
+          
+          echo "Upload the dummy file to Züs"
           ./rclone copy linux.txt automation:workflow
-      
-          # List the uploaded file
+
+          echo "List the uploaded file"
           echo "Listing uploaded file:"
           ./rclone lsf automation:workflow
-      
+
           # Verify file exists
           FILE_FOUND=$(./rclone lsf automation:workflow | grep "^linux.txt$" || true)
           if [ -z "$FILE_FOUND" ]; then
@@ -51,8 +51,8 @@ jobs:
           else
             echo "File verified: $FILE_FOUND"
           fi
-      
-          # Delete the uploaded file
+
+          echo "Delete the uploaded file"
           ./rclone delete  automation:workflow
 
       - name: Upload Built Binary
@@ -62,20 +62,58 @@ jobs:
           path: ./rclone
 
 
-  # build-windows:
-  #   name: Build Windows Binary
-  #   runs-on: windows-latest
+  build-windows:
+    name: Build Windows Binary
+    runs-on: windows-latest
 
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-go@v5
-  #       with:
-  #         go-version: '1.22'
-  #     - run: make build-windows-native
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: rclone-windows
-  #         path: ./rclone.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - run: make build-windows-native
+
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.zcn"
+          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${{ secrets.ZCN_WALLET_JSON }}")) | Out-File -Encoding ascii "$env:USERPROFILE\.zcn\wallet.json"
+          "${{ secrets.ZCN_CONFIG_YAML }}" | Out-File -Encoding ascii "$env:USERPROFILE\.zcn\config.yaml"
+
+      - name: Setup rclone Configuration
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.config\rclone"
+          "${{ secrets.RCLONE_CONF }}" | Out-File -Encoding ascii "$env:USERPROFILE\.config\rclone\rclone.conf"
+
+      - name: Functionality Test
+        shell: powershell
+        run: |
+          Set-Content -Path "win.txt" -Value "This is a test file for Züs upload."
+
+          Write-Output "Upload the dummy file to Züs"
+          .\rclone.exe copy win.txt automation:workflow
+
+          Write-Output "Listing uploaded file:"
+          $result = .\rclone.exe lsf automation:workflow
+          Write-Output $result
+
+          if ($result -notmatch "^win.txt") {
+            Write-Output "File not found on remote!"
+            exit 1
+          } else {
+            Write-Output "File verified: $result"
+          }
+
+          Write-Output "Deleting the uploaded file"
+          .\rclone.exe delete automation:workflow
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rclone-windows
+          path: ./rclone.exe
+
 
   # build-mac-amd:
   #   name: Build macOS (Intel)
