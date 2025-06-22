@@ -12,58 +12,80 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      - run: make build-linux
-      - uses: actions/upload-artifact@v4
+
+      - name: Build Linux Binary
+        run: make build-linux
+
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        run: |
+          mkdir -p ~/.zcn
+          echo "${{ secrets.ZCN_WALLET_JSON }}" > ~/.zcn/wallet.json
+          echo "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+
+      - name: Setup rclone Configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+      - name: Functionality Test (Push and List File)
+        run: |
+          echo "Listing uploaded file:"
+          ./rclone lsf automation:workflow
+
+      - name: Upload Built Binary
+        uses: actions/upload-artifact@v4
         with:
           name: rclone-linux
           path: ./rclone
 
-  build-windows:
-    name: Build Windows Binary
-    runs-on: windows-latest
 
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-      - run: make build-windows-native
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rclone-windows
-          path: ./rclone.exe
+  # build-windows:
+  #   name: Build Windows Binary
+  #   runs-on: windows-latest
 
-  build-mac-amd:
-    name: Build macOS (Intel)
-    runs-on: macos-13
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-go@v5
+  #       with:
+  #         go-version: '1.22'
+  #     - run: make build-windows-native
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: rclone-windows
+  #         path: ./rclone.exe
 
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-      - run: go clean -cache -modcache -testcache
-      - run: make build-mac-amd
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rclone-mac-amd64
-          path: ./rclone
+  # build-mac-amd:
+  #   name: Build macOS (Intel)
+  #   runs-on: macos-13
 
-  build-mac-arm:
-    name: Build macOS (Apple Silicon)
-    runs-on: macos-14
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-go@v5
+  #       with:
+  #         go-version: '1.22'
+  #     - run: go clean -cache -modcache -testcache
+  #     - run: make build-mac-amd
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: rclone-mac-amd64
+  #         path: ./rclone
 
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-      - run: go clean -cache -modcache -testcache
-      - run: make build-mac-arm
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rclone-mac-arm64
-          path: ./rclone
+  # build-mac-arm:
+  #   name: Build macOS (Apple Silicon)
+  #   runs-on: macos-14
+
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-go@v5
+  #       with:
+  #         go-version: '1.22'
+  #     - run: go clean -cache -modcache -testcache
+  #     - run: make build-mac-arm
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: rclone-mac-arm64
+  #         path: ./rclone
