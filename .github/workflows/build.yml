@@ -23,7 +23,7 @@ jobs:
       - name: Create ~/.zcn and add wallet.json and config.yaml
         run: |
           mkdir -p ~/.zcn
-           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" > ~/.zcn/wallet.json
+           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
            printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
       - name: Upload wallet.json for debug
         uses: actions/upload-artifact@v4
