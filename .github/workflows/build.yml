@@ -25,10 +25,15 @@ jobs:
           mkdir -p ~/.zcn
            printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" > ~/.zcn/wallet.json
            printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+      - name: Upload wallet.json for debug
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-debug
+          path: ~/.zcn/wallet.json
       - name: Validate wallet.json
         run: |
           cat ~/.zcn/wallet.json | jq empty
-          
+
       - name: Setup rclone Configuration
         run: |
           mkdir -p ~/.config/rclone
