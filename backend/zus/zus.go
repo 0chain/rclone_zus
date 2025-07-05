@@ -29,22 +29,22 @@ import (
 var (
 	// batcher default options
 	defaultBatcherOptions = batcher.Options{
-		MaxBatchSize: 50,
-		DefaultTimeoutSync: 500 * time.Millisecond,
-		DefaultTimeoutAsync: 5 * time.Second,
+		MaxBatchSize:          50,
+		DefaultTimeoutSync:    500 * time.Millisecond,
+		DefaultTimeoutAsync:   5 * time.Second,
 		DefaultBatchSizeAsync: 100,
 	}
 )
 
 type Options struct {
-	AllocationID string `config:"allocation_id"`
-	ConfigDir    string `config:"config_dir"`
-	Encrypt      bool   `config:"encrypt"`
-	WorkDir      string `config:"work_dir"`
-	SdkLogLevel  int    `config:"sdk_log_level"`
-	BatchMode    string `config:"batch_mode"`
+	AllocationID string        `config:"allocation_id"`
+	ConfigDir    string        `config:"config_dir"`
+	Encrypt      bool          `config:"encrypt"`
+	WorkDir      string        `config:"work_dir"`
+	SdkLogLevel  int           `config:"sdk_log_level"`
+	BatchMode    string        `config:"batch_mode"`
 	BatchTimeout time.Duration `config:"batch_timeout"`
-	BatchSize    int    `config:"batch_size"`
+	BatchSize    int           `config:"batch_size"`
 }
 
 type Fs struct {
@@ -54,7 +54,7 @@ type Fs struct {
 	opts     Options      // parsed options
 	features *fs.Features // optional features
 	alloc    *sdk.Allocation
-	batcher *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations
+	batcher  *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations
 }
 
 func init() {
@@ -207,7 +207,8 @@ func (f *Fs) Name() string {
 
 // Root of the remote (as passed into NewFs)
 func (f *Fs) Root() string {
-	return f.root
+	//strip the leading / if present: "/root-name" --> "root-name"
+	return strings.TrimPrefix(f.root, "/")
 }
 
 // String returns a description of the FS
