@@ -154,8 +154,12 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 			return nil, err
 		}
 
-		allocationID := strings.ReplaceAll(string(allocBytes), " ", "")
-		allocationID = strings.ReplaceAll(allocationID, "\n", "")
+		allocationID := strings.Map(func(r rune) rune {
+			if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
+				return -1
+			}
+			return r
+		}, string(allocBytes))
 
 		if len(allocationID) != 64 {
 			return nil, fmt.Errorf("allocation id has length %d, should be 64", len(allocationID))
