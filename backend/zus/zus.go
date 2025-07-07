@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -604,15 +605,23 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 		opRequest.OperationType = constants.FileOperationUpdate
 	}
 
+	// filesystem check
+	if o.fs == nil || o.fs.alloc == nil {
+		return errors.New("filesystem not initialized")
+	}
+
 	// If the batcher is enabled, we commit the operation through the batcher
 	if o.fs.batcher.Batching() {
 		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	}
+
 	if err != nil {
+		log.Printf("Failed to upload to %s: %v", o.remote, err)
 		return err
 	}
+
 	o.modTime = modified
 	o.size = rb.size
 	o.encrypted = o.fs.opts.Encrypt
@@ -627,13 +636,26 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 		RemotePath:    o.remote,
 	}
 
+	// filesystem check
+	if o.fs == nil || o.fs.alloc == nil {
+		return errors.New("filesystem not initialized")
+	}
+
 	// If batcher is enabled, we commit the operation through the batcher
 	if o.fs.batcher.Batching() {
 		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
+		if err != nil {
+			log.Printf("Failed to remove %s: %v", o.remote, err)
+			return err
+		}
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+		if err != nil {
+			log.Printf("Failed to remove %s: %v", o.remote, err)
+			return err
+		}
 	}
-	return err
+	return nil
 }
 
 func (o *Object) readMetaData(ctx context.Context) (err error) {
