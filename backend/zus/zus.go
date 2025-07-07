@@ -93,6 +93,16 @@ func init() {
 	})
 }
 
+// removes newlines, tab spaces and extra unecessary
+func removeWhitespace(r rune) rune {
+	switch r {
+	case ' ', '\n', '\r', '\t':
+		return -1
+	default:
+		return r
+	}
+}
+
 // NewFs constructs an Fs from the path
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 
@@ -155,12 +165,8 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 			return nil, err
 		}
 
-		allocationID := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
-				return -1
-			}
-			return r
-		}, string(allocBytes))
+		// removes extra spaces and new lines from the allocation.txt if present
+		allocationID := strings.Map(removeWhitespace, string(allocBytes))
 
 		if len(allocationID) != 64 {
 			return nil, fmt.Errorf("allocation id has length %d, should be 64", len(allocationID))
