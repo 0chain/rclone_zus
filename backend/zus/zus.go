@@ -626,7 +626,13 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    o.remote,
 	}
-	err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+
+	// If batcher is enabled, we commit the operation through the batcher
+	if o.fs.batcher.Batching() {
+		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
+	} else {
+		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	}
 	return err
 }
 
