@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -92,6 +93,16 @@ func init() {
 	})
 }
 
+// removes newlines, tab spaces and extra unecessary
+func removeWhitespace(r rune) rune {
+	switch r {
+	case ' ', '\n', '\r', '\t':
+		return -1
+	default:
+		return r
+	}
+}
+
 // NewFs constructs an Fs from the path
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 
@@ -154,12 +165,8 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 			return nil, err
 		}
 
-		allocationID := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
-				return -1
-			}
-			return r
-		}, string(allocBytes))
+		// removes extra spaces and new lines from the allocation.txt if present
+		allocationID := strings.Map(removeWhitespace, string(allocBytes))
 
 		if len(allocationID) != 64 {
 			return nil, fmt.Errorf("allocation id has length %d, should be 64", len(allocationID))
@@ -604,15 +611,23 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 		opRequest.OperationType = constants.FileOperationUpdate
 	}
 
+	// filesystem check
+	if o.fs == nil || o.fs.alloc == nil {
+		return errors.New("filesystem not initialized")
+	}
+
 	// If the batcher is enabled, we commit the operation through the batcher
 	if o.fs.batcher.Batching() {
 		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	}
+
 	if err != nil {
+		log.Printf("Failed to upload to %s: %v", o.remote, err)
 		return err
 	}
+
 	o.modTime = modified
 	o.size = rb.size
 	o.encrypted = o.fs.opts.Encrypt
@@ -627,13 +642,26 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 		RemotePath:    o.remote,
 	}
 
+	// filesystem check
+	if o.fs == nil || o.fs.alloc == nil {
+		return errors.New("filesystem not initialized")
+	}
+
 	// If batcher is enabled, we commit the operation through the batcher
 	if o.fs.batcher.Batching() {
 		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
+		if err != nil {
+			log.Printf("Failed to remove %s: %v", o.remote, err)
+			return err
+		}
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+		if err != nil {
+			log.Printf("Failed to remove %s: %v", o.remote, err)
+			return err
+		}
 	}
-	return err
+	return nil
 }
 
 func (o *Object) readMetaData(ctx context.Context) (err error) {
