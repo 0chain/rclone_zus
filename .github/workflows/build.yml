@@ -6,6 +6,7 @@ on:
       - feat/rclone-build
 
 
+
 jobs:
   zus-tests:
     name: Run Züs Backend Tests
@@ -35,9 +36,7 @@ jobs:
       - name: Run backend tests
         working-directory: ./rclone
         run: go test -v ./backend/zus
-
-
-jobs:
+  
   build-linux:
     name: Build Linux Binary
     runs-on: ubuntu-latest
