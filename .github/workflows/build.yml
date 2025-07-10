@@ -23,6 +23,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: rclone_zus
+      - name: Setup rclone Configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
 
       - name: Copy Züs backend into rclone
         run: |
