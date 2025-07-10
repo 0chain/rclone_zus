@@ -748,17 +748,33 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 	return nil
 }
 
+// Copy implements the fs.Fs Copy interface method.
+// It performs a server-side copy of the source object to the specified destination path.
+//
+// Parameters:
+//   - ctx: context for the operation (used for cancellation/deadlines)
+//   - src: the source fs.Object to be copied (must be of type *Object)
+//   - remote: the target relative path within the destination backend
+//
+// Returns:
+//   - a new fs.Object representing the copied file
+//   - an error if the operation fails
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	// Type assert the source object to our custom Object type
 	srcZus, ok := src.(*Object)
 	if !ok {
 		return nil, errors.New("invalid source object type")
 	}
 
+	// Build the full destination path from root and remote
 	dstPath := path.Join("/", f.root, remote)
 	dstPath = path.Clean(dstPath)
+
+	// Extract directory and file name from the destination path
 	dstDir := path.Dir(dstPath)
 	dstName := path.Base(dstPath)
 
+	// Construct the SDK operation request for copying
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationCopy,
 		RemotePath:    srcZus.remote, // full source path from original Fs
@@ -767,6 +783,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 
 	var err error
+	// Use batcher if enabled, otherwise perform direct operation
 	if f.batcher.Batching() {
 		_, err = f.batcher.Commit(ctx, srcZus.remote, opRequest)
 	} else {
@@ -776,6 +793,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, err
 	}
 
+	// Create and initialize the new Object representing the copied file
 	newObj := &Object{
 		fs:     f,
 		remote: dstPath,
