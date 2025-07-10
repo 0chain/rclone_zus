@@ -23,6 +23,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: rclone_zus
+
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        run: |
+          mkdir -p ~/.zcn
+           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
+           printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+           
       - name: Setup rclone Configuration
         run: |
           mkdir -p ~/.config/rclone
