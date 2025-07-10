@@ -26,6 +26,8 @@ jobs:
 
       - name: Copy Züs backend into rclone
         run: |
+          pwd
+          ls
           cp -r rclone_zus/backend/zus rclone/backend/
 
       - name: Setup Go
@@ -35,7 +37,11 @@ jobs:
 
       - name: Run backend tests
         working-directory: ./rclone
-        run: go test -v ./backend/zus
+        run: |
+          pwd 
+          ls
+          go mod tidy 
+          go test -v ./backend/zus
   
   build-linux:
     name: Build Linux Binary
