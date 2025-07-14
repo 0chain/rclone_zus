@@ -635,6 +635,61 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 	return nil
 }
 
+// Move moves a file from one location to another within the same remote.
+//
+// It constructs an SDK move operation, optionally batching it if the batcher is enabled.
+// Returns a new object pointing to the destination if the move is successful.
+// Move performs move operation using FileOpertaionMove of GoSDK: A metadata-only move, using blobber-native logic
+func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	// Type assert the source object to our backend-specific type
+	srcObj, ok := src.(*Object)
+	if !ok {
+		return nil, errors.New("invalid object type")
+	}
+
+	// Construct absolute destination path
+	dstPath := path.Join("/", f.root, remote) // e.g., /destination/file.extension
+	dstDir := path.Dir(dstPath)               // e.g., /destination
+	dstName := path.Base(dstPath)             // e.g., file.extension
+
+	// Build the move operation request for the SDK
+	opRequest := sdk.OperationRequest{
+		OperationType: constants.FileOperationMove,
+		RemotePath:    srcObj.remote, // Full source path, e.g., /directory/file.extension
+		DestPath:      dstDir,        // Target directory path
+		DestName:      dstName,       // Target file name
+	}
+
+	// filesystem check
+	if f == nil || f.alloc == nil {
+		return nil, errors.New("filesystem not initialized")
+	}
+
+	var err error
+	// If batching is enabled, defer execution via the batcher
+	if f.batcher.Batching() {
+		_, err = f.batcher.Commit(ctx, srcObj.remote, opRequest)
+	} else {
+		// Otherwise, perform the move operation immediately
+		err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Return a new Object representing the destination path
+	newObj := &Object{
+		fs:     f,
+		remote: dstPath,
+	}
+	err = newObj.readMetaData(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return newObj, nil
+}
+
 // Remove an object
 func (o *Object) Remove(ctx context.Context) (err error) {
 	opRequest := sdk.OperationRequest{
