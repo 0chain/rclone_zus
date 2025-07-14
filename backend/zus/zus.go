@@ -639,6 +639,7 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 //
 // It constructs an SDK move operation, optionally batching it if the batcher is enabled.
 // Returns a new object pointing to the destination if the move is successful.
+// Move performs move operation using FileOpertaionMove of GoSDK: A metadata-only move, using blobber-native logic
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	// Type assert the source object to our backend-specific type
 	srcObj, ok := src.(*Object)
@@ -654,7 +655,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	// Build the move operation request for the SDK
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationMove,
-		RemotePath:    srcObj.remote, // Full source path, e.g., /purge-delete/file.extension
+		RemotePath:    srcObj.remote, // Full source path, e.g., /directory/file.extension
 		DestPath:      dstDir,        // Target directory path
 		DestName:      dstName,       // Target file name
 	}
