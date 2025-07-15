@@ -211,6 +211,15 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	return f, nil
 }
 
+func (f *Fs) Equal(fs2 fs.Fs) bool {
+	fmt.Println(">>> Equal() called")
+	other, ok := fs2.(*Fs)
+	if !ok {
+		return false
+	}
+	return f.name == other.name && f.opts.AllocationID == other.opts.AllocationID
+}
+
 // Name of the remote (as passed into NewFs)
 func (f *Fs) Name() string {
 	return f.name
@@ -254,7 +263,11 @@ func (f *Fs) Features() *fs.Features {
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	remotepath := path.Join(f.root, dir)
 	fs.Debug("List: ", remotepath)
-	level := len(strings.Split(strings.TrimSuffix(remotepath, "/"), "/"))
+
+	// Remove trailing slash and calculate level
+	remotepath = strings.TrimSuffix(remotepath, "/")
+	level := len(strings.Split(remotepath, "/"))
+
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
 	if err != nil {
 		return nil, err
@@ -262,18 +275,23 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	if len(oREsult.Refs) == 0 {
 		return nil, fs.ErrorDirNotFound
 	}
-	if oREsult.Refs[0].Type != fileref.DIRECTORY {
-		child := oREsult.Refs[0]
+
+	ref := oREsult.Refs[0]
+
+	// If the path is a file (not directory), return it directly
+	if ref.Type != fileref.DIRECTORY {
 		o := &Object{
 			fs: f,
 		}
-		err = o.readFromRef(&child)
+		err = o.readFromRef(&ref)
 		if err != nil {
 			return nil, err
 		}
 		entries = append(entries, o)
 		return entries, nil
 	}
+
+	// Otherwise, list directory contents
 	res := f.alloc.ListObjects(ctx, remotepath, "", "", "", "", "regular", level+1, 1000)
 
 	for child := range res {
@@ -282,11 +300,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			return nil, child.Err
 		}
 		if child.Type == fileref.DIRECTORY {
-			sep := "/"
-			if f.root == "/" {
-				sep = ""
-			}
-			entry = fs.NewDir(strings.TrimPrefix(child.Path, f.root+sep), child.UpdatedAt.ToTime())
+			// Handle subdirectory
+			relPath := strings.TrimPrefix(child.Path, f.root+"/")
+			entry = fs.NewDir(relPath, child.UpdatedAt.ToTime())
 		} else {
 			o := &Object{
 				fs: f,
@@ -438,11 +454,18 @@ func (o *Object) String() string {
 
 // Remote returns the remote path
 func (o *Object) Remote() string {
-	if o.fs.root == "/" || o.fs.root == o.remote {
+	if o.fs.root == "/" {
 		return strings.TrimPrefix(o.remote, "/")
 	}
 
-	return strings.TrimPrefix(o.remote, o.fs.root+"/")
+	// Handle exact match case where o.remote == o.fs.root
+	if o.remote == o.fs.root {
+		return path.Base(o.remote)
+	}
+
+	relPath := strings.TrimPrefix(o.remote, o.fs.root)
+	relPath = strings.TrimPrefix(relPath, "/")
+	return relPath
 }
 
 // ModTime returns the modification date of the file
@@ -778,6 +801,64 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 	o.md5 = ref.ActualFileHash
 	o.mimeType = ref.MimeType
 	return nil
+}
+
+// Copy implements the fs.Fs Copy interface method.
+// It performs a server-side copy of the source object to the specified destination path.
+//
+// Parameters:
+//   - ctx: context for the operation (used for cancellation/deadlines)
+//   - src: the source fs.Object to be copied (must be of type *Object)
+//   - remote: the target relative path within the destination backend
+//
+// Returns:
+//   - a new fs.Object representing the copied file
+//   - an error if the operation fails
+func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	// Type assert the source object to our custom Object type
+	srcZus, ok := src.(*Object)
+	if !ok {
+		return nil, errors.New("invalid source object type")
+	}
+
+	// Build the full destination path from root and remote
+	dstPath := path.Join("/", f.root, remote)
+	dstPath = path.Clean(dstPath)
+
+	// Extract directory and file name from the destination path
+	dstDir := path.Dir(dstPath)
+	dstName := path.Base(dstPath)
+
+	// Construct the SDK operation request for copying
+	opRequest := sdk.OperationRequest{
+		OperationType: constants.FileOperationCopy,
+		RemotePath:    srcZus.remote, // full source path from original Fs
+		DestPath:      dstDir,
+		DestName:      dstName,
+	}
+
+	var err error
+	// Use batcher if enabled, otherwise perform direct operation
+	if f.batcher.Batching() {
+		_, err = f.batcher.Commit(ctx, srcZus.remote, opRequest)
+	} else {
+		err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Create and initialize the new Object representing the copied file
+	newObj := &Object{
+		fs:     f,
+		remote: dstPath,
+	}
+	err = newObj.readMetaData(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return newObj, nil
 }
 
 type ReaderBytes struct {
