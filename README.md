@@ -62,28 +62,28 @@ confirmation_chain_length: 3
 🚀 Installation & Setup
 
 This section guides you through cloning, building, and configuring rclone_zus with the Züs backend.
-1. Clone the Repository
+### 1. Clone the Repository
 
-git clone https://github.com/0chain/rclone_zus.git
-cd rclone_zus
+    git clone https://github.com/0chain/rclone_zus.git
+    cd rclone_zus
 
-2. Build the Rclone Binary
+### 2. Build the Rclone Binary
 
 Use the provided Makefile to build the project:
 
-make
+    make
 
 This will compile the rclone binary into the project root (./rclone), including the Züs backend.
 
-    💡 Troubleshooting: If make fails (e.g., missing make command or incompatible system), you can build manually:
+💡 Troubleshooting: If make fails (e.g., missing make command or incompatible system), you can build manually:
 
-go build -o rclone ./rclone.go
+    go build -o rclone ./rclone.go
 
 Ensure you have Go ≥1.20 installed (suggested go 1.23.4)and your GOPATH properly configured.
 
 This will build a local ./rclone binary with the Züs backend integrated.
 
-    Note: If you're modifying backend code (e.g. backend/zus/zus.go), you can recompile by running the go build command again.
+Note: If you're modifying backend code (e.g. backend/zus/zus.go), you can recompile by running the go build command again.
 
 ### 3. Configure Züs SDK
 
