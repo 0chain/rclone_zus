@@ -9,7 +9,7 @@
 [Installation](https://rclone.org/install/) |
 [Forum](https://forum.rclone.org/)
 
-## Züs Overview
+## Züs Overview 
 
 [Zus](https://zus.network/) is the first S3-compatible storage platform that’s fast, secure, and ACID-compliant operating on a zero-trust network.
 Our goal is to deliver 10x value to customers through:
@@ -58,6 +58,46 @@ min_submit: 50 # in percentage
 min_confirmation: 50 # in percentage
 confirmation_chain_length: 3
 ```
+
+🚀 Installation & Setup
+
+This section guides you through cloning, building, and configuring rclone_zus with the Züs backend.
+1. Clone the Repository
+
+git clone https://github.com/0chain/rclone_zus.git
+cd rclone_zus
+
+2. Build the Rclone Binary
+
+Use the provided Makefile to build the project:
+
+make
+
+This will compile the rclone binary into the project root (./rclone), including the Züs backend.
+
+    💡 Troubleshooting: If make fails (e.g., missing make command or incompatible system), you can build manually:
+
+go build -o rclone ./rclone.go
+
+Ensure you have Go ≥1.20 installed (suggested go 1.23.4)and your GOPATH properly configured.
+
+This will build a local ./rclone binary with the Züs backend integrated.
+
+    Note: If you're modifying backend code (e.g. backend/zus/zus.go), you can recompile by running the go build command again.
+
+### 3. Configure Züs SDK
+
+Ensure the following Züs config files are present in `~/.zcn/`:
+
+- `wallet.json` – Züs wallet
+- `config.yaml` – Züs network configuration
+- `allocation.txt` – Your allocation ID (64-character hex string)
+
+You can generate these using:
+
+- [Züs CLI](https://docs.zus.network/zus-docs/clis)
+- [Blimp Web UI](https://blimp.software)
+- [Vult UI](https://vult.network)
 
 **Set Up**
 
