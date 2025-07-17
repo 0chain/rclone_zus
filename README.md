@@ -6,7 +6,7 @@
 [Download](https://rclone.org/downloads/) |
 [Contributing](CONTRIBUTING.md) |
 [Changelog](https://rclone.org/changelog/) |
-[Installation](https://rclone.org/install/) |
+[Installation](#installation--setup) |
 [Forum](https://forum.rclone.org/)
 
 ## Züs Overview 
@@ -58,8 +58,7 @@ min_submit: 50 # in percentage
 min_confirmation: 50 # in percentage
 confirmation_chain_length: 3
 ```
-
-🚀 Installation & Setup
+## Installation & Setup
 
 This section guides you through cloning, building, and configuring rclone_zus with the Züs backend.
 ### 1. Clone the Repository
@@ -96,8 +95,8 @@ Ensure the following Züs config files are present in `~/.zcn/`:
 You can generate these using:
 
 - [Züs CLI](https://docs.zus.network/zus-docs/clis)
-- [Blimp Web UI](https://blimp.software)
 - [Vult UI](https://vult.network)
+- [Blimp Web UI](https://blimp.software)
 
 **Set Up**
 
