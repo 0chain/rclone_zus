@@ -197,7 +197,7 @@ Output example:
 
     rclone mkdir myZus:<path>/<new_directory_name>
 
-Example (This example shows new directory name as "newDirectory")
+Example: create new direcotry in the root (This example shows new directory name as "newDirectory")
 
     rclone mkdir myZus:/newDirectory
 
