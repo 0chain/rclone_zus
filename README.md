@@ -1,6 +1,8 @@
 [<img src="https://rclone.org/img/logo_on_light__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-light-mode-only)
 [<img src="https://rclone.org/img/logo_on_dark__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-dark-mode-only)
 
+[Rclone for Züs](#what-is-rclone_zus
+) |
 [Installation](#installation--setup) |
 [Website](https://rclone.org) |
 [Documentation](https://rclone.org/docs/) |
@@ -34,6 +36,28 @@ Our goal is to deliver 10x value to customers through:
 | **Zero Trust Network**               | Not supported                                       | Not supported                                  | Zero-trust architecture ensures providers can't access file contents or user identity |
 | **ACID Compliant (Data Integrity)**      | Not ACID compliant            | Not ACID compliant                    | Fully ACID compliant to ensure consistent reads/writes and verifiable storage behavior    |
 | **Add/Swap Infrastructure (No Lock-in, 100% Dynamic Availability)** | No real-time server switching | Tied to fixed infrastructure                   | Add, remove, or swap storage providers dynamically with no lock-in for 100% dynamic availability                        |
+
+## What is rclone_zus?
+
+**rclone_zus** is a custom integration of the rclone command-line tool with the Züs decentralized cloud. It enables users to interact with Züs storage using familiar rclone commands like `copy, sync, move, and ls`.
+
+This backend implementation allows developers, DevOps teams, and cloud users to:
+
+- Use rclone’s powerful CLI and scripting capabilities with Züs
+
+- Perform efficient, **server-side batch operations** (copy, delete, move)
+
+- Use Züs as an S3-compatible remote via rclone without vendor lock-in
+
+ The zus backend is now available via -type zus in your rclone.conf file and supports advanced Züs features including:
+
+- `Sync & batch mode` uploads
+
+- Server-side copy & move
+
+- Native delete, purge, and stat support
+
+- Directory listings and recursive operations
 
 ## Configuration
 
@@ -313,3 +337,12 @@ Configuration complete.
 
     rclone move <remote name>:<source path> <remote name>:<destination path>  --transfers=50
    
+###  Why Use rclone_zus?
+
+- Scripting Ready: Automate uploads/downloads via shell scripts
+
+- Dev & CI Friendly: Plug into CI/CD pipelines with secure Züs backend
+
+- Zero Lock-in: Maintain open architecture with CLI-driven usage
+
+- Fast Sync: Avoid redundant uploads with batch commit
