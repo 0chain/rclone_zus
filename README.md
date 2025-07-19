@@ -162,7 +162,7 @@ d) Delete this remote
 y/e/d> y
 ```
 
-Make sure your rclone.conf file is created.
+Make sure your **rclone.conf** file is created.
 - For Windows, check %APPDATA%\rclone\rclone.conf. If you downloaded the rclone.exe, you can place the rclone.conf in the same directory as the .exe.
 - For macOS/Linux, check ~/.config/rclone/rclone.conf
 
@@ -193,13 +193,17 @@ Output example:
     -1 2025-07-14 22:45:57        -1 10MbFiles50
 ```
 
-Make a new directory (This example shows new directory name as "directory")
+**Make a new directory** 
 
-    rclone mkdir myZus:directory
+    rclone mkdir myZus:<path>/<new_directory_name>
 
-List the contents of a directory
+Example (This example shows new directory name as "newDirectory")
 
-    rclone ls myZus:directory
+    rclone mkdir myZus:/newDirectory
+
+**List** the contents of a directory
+
+    rclone ls myZus:/<directory_path>
 
 **Copy** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
 
