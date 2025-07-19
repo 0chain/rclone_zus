@@ -59,6 +59,16 @@ This backend implementation allows developers, DevOps teams, and cloud users to:
 
 - Directory listings and recursive operations
 
+###  Why Use rclone_zus?
+
+- Scripting Ready: Automate uploads/downloads via shell scripts
+
+- Dev & CI Friendly: Plug into CI/CD pipelines with secure Züs backend
+
+- Zero Lock-in: Maintain open architecture with CLI-driven usage
+
+- Fast Sync: Avoid redundant uploads with batch commit
+
 ## Configuration
 
 **Prerequisites**
@@ -336,13 +346,3 @@ Configuration complete.
 **Move** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
 
     rclone move <remote name>:<source path> <remote name>:<destination path>  --transfers=50
-   
-###  Why Use rclone_zus?
-
-- Scripting Ready: Automate uploads/downloads via shell scripts
-
-- Dev & CI Friendly: Plug into CI/CD pipelines with secure Züs backend
-
-- Zero Lock-in: Maintain open architecture with CLI-driven usage
-
-- Fast Sync: Avoid redundant uploads with batch commit
