@@ -67,11 +67,13 @@ This backend implementation allows developers, DevOps teams, and cloud users to:
 
 - Zero Lock-in: Maintain open architecture with CLI-driven usage
 
-- Fast Sync: Avoid redundant uploads with batch commit
-
 - Use [Vult](https://vult.network) or [Blimp UI](https://blimp.network) to manage and render files in a carousel view
+
 - Share both public and encrypted files or folders with anyone instantly
+
 - Seamlessly scale by managing multiple allocations via Blimp and organizing data into multiple data rooms
+
+- Fast Sync: Avoid redundant uploads with batch commit
 
 ## Configuration
 
