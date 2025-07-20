@@ -69,6 +69,10 @@ This backend implementation allows developers, DevOps teams, and cloud users to:
 
 - Fast Sync: Avoid redundant uploads with batch commit
 
+- Use [Vult](https://vult.network) or [Blimp UI](https://blimp.network) to manage and render files in a carousel view
+- Share both public and encrypted files or folders with anyone instantly
+- Seamlessly scale by managing multiple allocations via Blimp and organizing data into multiple data rooms
+
 ## Configuration
 
 **Prerequisites**
@@ -144,7 +148,7 @@ You can generate these using:
 
 - [Züs CLI](https://docs.zus.network/zus-docs/clis)
 - [Vult UI](https://vult.network)
-- [Blimp Web UI](https://blimp.software)
+- [Blimp UI](https://blimp.software)
 
 **Remote Cofiguration**
 
@@ -283,7 +287,7 @@ sdk_log_level> leave empty
 Option batch_mode.
 Upload file batching sync|async|off.
 This sets the batch mode used by rclone.
-zusThis has 3 possible values
+This has 3 possible values
 - off - no batching
 - sync - batch uploads and check completion (default)
 - async - batch upload and don't check completion
