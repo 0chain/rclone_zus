@@ -1,15 +1,17 @@
 [<img src="https://rclone.org/img/logo_on_light__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-light-mode-only)
 [<img src="https://rclone.org/img/logo_on_dark__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-dark-mode-only)
 
+[Rclone for Züs](#what-is-rclone_zus
+) |
+[Installation](#installation--setup) |
 [Website](https://rclone.org) |
 [Documentation](https://rclone.org/docs/) |
 [Download](https://rclone.org/downloads/) |
 [Contributing](CONTRIBUTING.md) |
 [Changelog](https://rclone.org/changelog/) |
-[Installation](https://rclone.org/install/) |
 [Forum](https://forum.rclone.org/)
 
-## Züs Overview
+## Züs Overview 
 
 [Zus](https://zus.network/) is the first S3-compatible storage platform that’s fast, secure, and ACID-compliant operating on a zero-trust network.
 Our goal is to deliver 10x value to customers through:
@@ -35,6 +37,44 @@ Our goal is to deliver 10x value to customers through:
 | **ACID Compliant (Data Integrity)**      | Not ACID compliant            | Not ACID compliant                    | Fully ACID compliant to ensure consistent reads/writes and verifiable storage behavior    |
 | **Add/Swap Infrastructure (No Lock-in, 100% Dynamic Availability)** | No real-time server switching | Tied to fixed infrastructure                   | Add, remove, or swap storage providers dynamically with no lock-in for 100% dynamic availability                        |
 
+## What is rclone_zus?
+
+**rclone_zus** is a custom integration of the rclone command-line tool with the Züs decentralized cloud. It enables users to interact with Züs storage using familiar rclone commands like `copy, sync, move, and ls`.
+
+This backend implementation allows developers, DevOps teams, and cloud users to:
+
+- Use rclone’s powerful CLI and scripting capabilities with Züs
+
+- Perform efficient, **server-side batch operations** (copy, delete, move)
+
+- Use Züs as an S3-compatible remote via rclone without vendor lock-in
+
+ The zus backend is now available via -type zus in your rclone.conf file and supports advanced Züs features including:
+
+- `Sync & batch mode` uploads
+
+- Server-side copy & move
+
+- Native delete, purge, and stat support
+
+- Directory listings and recursive operations
+
+###  Why Use rclone_zus?
+
+- Scripting Ready: Automate uploads/downloads via shell scripts
+
+- Dev & CI Friendly: Plug into CI/CD pipelines with secure Züs backend
+
+- Zero Lock-in: Maintain open architecture with CLI-driven usage
+
+- Use [Vult](https://vult.network) or [Blimp UI](https://blimp.network) to manage and render files in a carousel view
+
+- Share both public and encrypted files or folders with anyone instantly
+
+- Seamlessly scale by managing multiple allocations via Blimp and organizing data into multiple data rooms
+
+- Fast Sync: Avoid redundant uploads with batch commit
+
 ## Configuration
 
 **Prerequisites**
@@ -58,8 +98,61 @@ min_submit: 50 # in percentage
 min_confirmation: 50 # in percentage
 confirmation_chain_length: 3
 ```
+## Installation & Setup
 
-**Set Up**
+This section guides you through cloning, building, and configuring rclone_zus with the Züs backend.
+### 1. Clone the Repository
+
+    git clone https://github.com/0chain/rclone_zus.git
+    cd rclone_zus
+
+### 2. Build the Rclone Binary
+
+Use the provided Makefile to build the project:
+
+    make
+
+This will compile the rclone binary into the project root (./rclone), including the Züs backend.
+
+💡 Troubleshooting: If make fails (e.g., missing make command or incompatible system), you can build manually:
+
+    go build -o rclone ./rclone.go
+
+Ensure you have Go ≥1.20 installed (suggested go 1.23.4)and your GOPATH properly configured.
+
+This will build a local ./rclone binary with the Züs backend integrated.
+
+Note: If you're modifying backend code (e.g. backend/zus/zus.go), you can recompile by running the go build command again.
+
+### 3. (Optional) Install as Global Command rclone_zus
+
+To use your custom Rclone binary without the ./ prefix, install it globally by copying it to a directory in your system's $PATH, such as /usr/local/bin:
+
+    sudo cp ./rclone /usr/local/bin/rclone_zus
+
+After this, you can run it from anywhere as a normal command:
+
+    rclone_zus move TestZus:/source TestZus:/dest
+
+📌 Why rename it?
+
+Renaming it to rclone_zus helps avoid conflicts with the system-installed rclone, if present.
+
+### 4. Configure Züs SDK
+
+Ensure the following Züs config files are present in `~/.zcn/`:
+
+- `wallet.json` – Züs wallet
+- `config.yaml` – Züs network configuration
+- `allocation.txt` – Your allocation ID (64-character hex string)
+
+You can generate these using:
+
+- [Züs CLI](https://docs.zus.network/zus-docs/clis)
+- [Vult UI](https://vult.network)
+- [Blimp UI](https://blimp.software)
+
+**Remote Cofiguration**
 
 Here is an example of how to make a `zus` remote called `myZus`.
 
@@ -109,7 +202,7 @@ d) Delete this remote
 y/e/d> y
 ```
 
-Make sure your rclone.conf file is created.
+Make sure your **rclone.conf** file is created.
 - For Windows, check %APPDATA%\rclone\rclone.conf. If you downloaded the rclone.exe, you can place the rclone.conf in the same directory as the .exe.
 - For macOS/Linux, check ~/.config/rclone/rclone.conf
 
@@ -124,21 +217,50 @@ Once configured you can then use `rclone` like this,
 
 See top level directories
 
-    rclone lsd myZus:
+    rclone lsd <remote name>:<absolute path>
+
+Example to list all the files and directories inside the root directory of the remote "myZus"
+
+    rclone lsd myZus:/
 
 Output example:
 
 ```
-  -1 2025-05-14 15:27:59        -1 Encrypted
+    -1 2025-05-14 15:27:59        -1 Encrypted
+    -1 2025-07-12 17:25:15        -1 10MbFiles100
+    -1 2025-07-12 17:44:35        -1 10MbFiles100M
+    -1 2025-07-12 17:46:51        -1 project-zus
+    -1 2025-07-14 22:45:57        -1 10MbFiles50
 ```
 
-Make a new directory (This example shows new directory name as "directory")
+**Make a new directory** 
 
-    rclone mkdir myZus:directory
+    rclone mkdir myZus:<path>/<new_directory_name>
 
-List the contents of a directory
+Example: create new direcotry in the root (This example shows new directory name as "newDirectory")
 
-    rclone ls myZus:directory
+    rclone mkdir myZus:/newDirectory
+
+**List** the contents of a directory
+
+    rclone ls myZus:/<directory_path>
+
+**Copy** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
+
+    rclone copy <remote name>:<source path> <remote name>:<destination path>    
+    
+Example
+
+    rclone copy myZus:/sourcefilesDir/ myZus:/destinationDir/
+
+
+**Move** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
+
+    rclone move <remote name>:<source path> <remote name>:<destination path>    
+    
+Example
+
+    rclone move myZus:/sourcefilesDir/ myZus:/destinationDir/
 
 Sync `/home/local/directory` to the remote path, deleting any
 excess files in the path.
@@ -146,3 +268,87 @@ excess files in the path.
     rclone sync --interactive /home/local/directory myZus:directory
 
 You can also check your allocation in the Blimp and Vult UI. Files should be in a folder named "directory".
+
+
+## Sync Mode Configuration
+### Use sync mode in rclone_zus for bulk operations
+
+use `--transfers=number of operations | --transfers=50` with the commands.
+
+```
+Edit advanced config?
+y) Yes
+n) No (default)
+y/n> y
+
+Option sdk_log_level.
+Log level for the SDK
+Enter a signed integer. Press Enter for the default (0).
+sdk_log_level> leave empty
+
+Option batch_mode.
+Upload file batching sync|async|off.
+This sets the batch mode used by rclone.
+This has 3 possible values
+- off - no batching
+- sync - batch uploads and check completion (default)
+- async - batch upload and don't check completion
+Rclone will close any outstanding batches when it exits which may make
+a delay on quit.
+Enter a value of type string. Press Enter for the default (sync).
+batch_mode> leave empty
+
+Option batch_size.
+Max number of files in upload batch.
+This sets the batch size of files to upload. It has to be less than 50.
+By default this is 0 which means rclone will calculate the batch size
+depending on the setting of batch_mode.
+- batch_mode: async - default batch_size is 100
+- batch_mode: sync - default batch_size is the same as --transfers
+- batch_mode: off - not in use
+Rclone will close any outstanding batches when it exits which may make
+a delay on quit.
+Setting this is a great idea if you are uploading lots of small files
+as it will make them a lot quicker. You can use --transfers 32 to
+maximise throughput.
+Enter a signed integer. Press Enter for the default (0).
+batch_size> 50
+
+Option batch_timeout.
+Max time to allow an idle upload batch before uploading.
+If an upload batch is idle for more than this long then it will be
+uploaded.
+The default for this is 0 which means rclone will choose a sensible
+default based on the batch_mode in use.
+- batch_mode: async - default batch_timeout is 5s
+- batch_mode: sync - default batch_timeout is 500ms
+- batch_mode: off - not in use
+Enter a duration s,m,h,d,w,M,y. Press Enter for the default (0s).
+batch_timeout> leave empty
+
+Option batch_commit_timeout.
+Max time to wait for a batch to finish committing
+Enter a duration s,m,h,d,w,M,y. Press Enter for the default (10m0s).
+batch_commit_timeout> leave empty
+
+Option description.
+Description of the remote.
+Enter a value. Press Enter to leave empty.
+description> leave empty
+
+Edit advanced config?
+y) Yes
+n) No (default)
+y/n> n
+
+Configuration complete.
+```
+
+
+**Copy** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
+
+    rclone copy <remote name>:<source path> <remote name>:<destination path>  --transfers=50
+
+**Move** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
+
+    rclone move <remote name>:<source path> <remote name>:<destination path>  --transfers=50
