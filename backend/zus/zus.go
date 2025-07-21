@@ -264,9 +264,27 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	remotepath := path.Join(f.root, dir)
 	fs.Debug("List: ", remotepath)
 
-	// Remove trailing slash and calculate level
-	remotepath = strings.TrimSuffix(remotepath, "/")
+	// Normalize and construct the full remote path
+	if f.root == "" && (dir == "" || dir == ".") {
+		// Special case: both root and dir are empty or current directory (".")
+		// listing the top-level (root) directory
+		remotepath = "/"
+	} else {
+		// Construct the full path by joining root and dir
+		// Ensures path always starts from root (absolute)
+		remotepath = path.Join("/", f.root, dir)
+	}
+
+	// Clean the path to remove redundant elements like multiple slashes or ".."
+	remotepath = path.Clean(remotepath)
+
+	// Calculate the directory depth level by counting '/' segments
 	level := len(strings.Split(remotepath, "/"))
+
+	// Special case: if remote path is exactly "/", set level to 1
+	if remotepath == "/" {
+		level = 1
+	}
 
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
 	if err != nil {
@@ -301,7 +319,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		}
 		if child.Type == fileref.DIRECTORY {
 			// Handle subdirectory
-			relPath := strings.TrimPrefix(child.Path, f.root+"/")
+			relPath := trimLeadingPath(child.Path, f.root)
 			entry = fs.NewDir(relPath, child.UpdatedAt.ToTime())
 		} else {
 			o := &Object{
@@ -452,20 +470,38 @@ func (o *Object) String() string {
 	return o.Remote()
 }
 
-// Remote returns the remote path
+// trimLeadingPath removes the leading root path from the full path to produce a relative path.
+//
+// Parameters:
+//   - fullPath: the complete absolute path of the object
+//   - root: the base path configured for the Fs instance
+//
+// Behavior:
+//   - Ensures both fullPath and root are normalized using path.Clean()
+//   - If root is "/", the function simply trims the leading "/" from fullPath
+//   - If root is a subdirectory, it trims the root prefix + "/" from the fullPath
+//
+// Returns:
+//   - A path relative to the root
+func trimLeadingPath(fullPath, root string) string {
+	// Ensure both root and fullPath are normalized and prefixed with a slash
+	root = path.Clean("/" + root)
+	fullPath = path.Clean(fullPath)
+
+	if root == "/" {
+		// If root is "/", trim leading slash only
+		return strings.TrimPrefix(fullPath, "/")
+	}
+	// Remove the root prefix (plus one trailing slash) from the full path
+	return strings.TrimPrefix(fullPath, root+"/")
+}
+
+// Remote returns the object’s path relative to the backend’s configured root.
+//
+// This is used by rclone to show the object's name/path from the user's perspective
+// rather than the full internal absolute path.
 func (o *Object) Remote() string {
-	if o.fs.root == "/" {
-		return strings.TrimPrefix(o.remote, "/")
-	}
-
-	// Handle exact match case where o.remote == o.fs.root
-	if o.remote == o.fs.root {
-		return path.Base(o.remote)
-	}
-
-	relPath := strings.TrimPrefix(o.remote, o.fs.root)
-	relPath = strings.TrimPrefix(relPath, "/")
-	return relPath
+	return trimLeadingPath(o.remote, o.fs.root)
 }
 
 // ModTime returns the modification date of the file
