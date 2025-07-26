@@ -386,11 +386,13 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 // Mkdir creates the directory if it doesn't exist
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 	remotepath := path.Join(f.root, dir)
+	fs.Infof(f, "Creating directory: %q", remotepath)
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationCreateDir,
 		RemotePath:    remotepath,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	fs.Infof(f, "Successfully created directory: %q", remotepath)
 	return err
 }
 
@@ -632,6 +634,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 }
 
 func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpdate bool) (err error) {
+	fs.Infof(o.fs, "Uploading file: %q", o.remote)
 	mp := make(map[string]string)
 	modified := src.ModTime(ctx)
 	mp["rclone:mtime"] = modified.Format(time.RFC3339)
@@ -686,7 +689,7 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 		log.Printf("Failed to upload to %s: %v", o.remote, err)
 		return err
 	}
-
+	fs.Infof(o.fs, "Successfully uploaded: %q", o.remote)
 	o.modTime = modified
 	o.size = rb.size
 	o.encrypted = o.fs.opts.Encrypt
@@ -751,6 +754,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 
 // Remove an object
 func (o *Object) Remove(ctx context.Context) (err error) {
+	fs.Infof(o.fs, "Deleting file: %q", o.remote)
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    o.remote,
@@ -775,6 +779,7 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	fs.Infof(o.fs, "Successfully deleted: %q", o.remote)
 	return nil
 }
 
