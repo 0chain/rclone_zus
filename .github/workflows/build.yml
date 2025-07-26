@@ -1,0 +1,308 @@
+name: rclone Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        default: 'main'
+      build_type:
+        description: 'Which build to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - mac-amd
+          - mac-arm
+
+
+
+jobs:
+#   zus-tests:
+#     name: Run Züs Backend Tests
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Clone rclone repo
+#         uses: actions/checkout@v4
+#         with:
+#           repository: rclone/rclone
+#           path: rclone
+
+#       - name: Clone rclone_zus repo
+#         uses: actions/checkout@v4
+#         with:
+#           path: rclone_zus
+
+#       - name: Create ~/.zcn and add wallet.json and config.yaml
+#         run: |
+#           mkdir -p ~/.zcn
+#            printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
+#            printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+           
+#       - name: Setup rclone Configuration
+#         run: |
+#           mkdir -p ~/.config/rclone
+#           printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+#       - name: Copy Züs backend into rclone
+#         run: |
+#           pwd
+#           ls
+#           cp -r rclone_zus/backend/zus rclone/backend/
+
+#       - name: Setup Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version: '1.22'
+
+#       - name: Run backend tests
+#         working-directory: ./rclone
+#         run: |
+#           pwd 
+#           ls
+#           go mod tidy 
+#           go test -v ./backend/zus
+  
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    # needs: zus-tests
+    if: |
+      ${{ github.event.inputs.build_type == 'linux' }} ||
+      ${{ github.event.inputs.build_type == 'all' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build Linux Binary
+        run: make build-linux
+
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        run: |
+          mkdir -p ~/.zcn
+           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
+           printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+
+      - name: Setup rclone Configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+      - name: Funcionality Test
+        run: |
+          # Create a dummy file
+          echo "This is a test file for Züs upload." > linux.txt
+          
+          echo "Upload the dummy file to Züs"
+          ./rclone copy linux.txt automation:workflow
+
+          echo "List the uploaded file"
+          echo "Listing uploaded file:"
+          ./rclone lsf automation:workflow
+
+          # Verify file exists
+          FILE_FOUND=$(./rclone lsf automation:workflow | grep "^linux.txt$" || true)
+          if [ -z "$FILE_FOUND" ]; then
+            echo "File not found on remote!"
+            exit 1
+          else
+            echo "File verified: $FILE_FOUND"
+          fi
+
+          echo "Delete the uploaded file"
+          ./rclone delete  automation:workflow
+
+      - name: Upload Built Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-linux
+          path: ./rclone
+
+
+  build-windows:
+    name: Build Windows Binary
+    runs-on: windows-latest
+    # needs: zus-tests
+    if: |
+      ${{ github.event.inputs.build_type == 'windows' }} ||
+      ${{ github.event.inputs.build_type == 'all' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - run: make build-windows-native
+
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.zcn"
+          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${{ secrets.ZCN_WALLET_JSON }}")) | Out-File -Encoding ascii "$env:USERPROFILE\.zcn\wallet.json"
+          "${{ secrets.ZCN_CONFIG_YAML }}" | Out-File -Encoding ascii "$env:USERPROFILE\.zcn\config.yaml"
+
+      - name: Setup rclone Configuration
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.config\rclone"
+          "${{ secrets.RCLONE_CONF }}" | Out-File -Encoding ascii "$env:USERPROFILE\.config\rclone\rclone.conf"
+
+      - name: Functionality Test
+        shell: powershell
+        run: |
+          Set-Content -Path "win.txt" -Value "This is a test file for Züs upload."
+
+          Write-Output "Upload the dummy file to Züs"
+          .\rclone.exe copy win.txt automation:workflow
+
+          Write-Output "Listing uploaded file:"
+          $result = .\rclone.exe lsf automation:workflow
+          Write-Output $result
+
+          if ($result -notmatch "^win.txt") {
+            Write-Output "File not found on remote!"
+            exit 1
+          } else {
+            Write-Output "File verified: $result"
+          }
+
+          Write-Output "Deleting the uploaded file"
+          .\rclone.exe delete automation:workflow
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rclone-windows
+          path: ./rclone.exe
+
+
+  build-mac-amd:
+    name: Build macOS (Intel)
+    runs-on: macos-13
+    # needs: zus-tests
+    if: |
+       ${{ github.event.inputs.build_type == 'mac-amd' }} ||
+       ${{ github.event.inputs.build_type == 'all' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - run: go clean -cache -modcache -testcache
+      - run: make build-mac-amd
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        run: |
+          mkdir -p ~/.zcn
+           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
+           printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+
+      - name: Setup rclone Configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+      - name: Funcionality Test
+        run: |
+          # Create a dummy file
+          echo "This is a test file for Züs upload." > mac_intel.txt
+          
+          echo "Upload the dummy file to Züs"
+          ./rclone copy mac_intel.txt automation:workflow
+
+          echo "List the uploaded file"
+          echo "Listing uploaded file:"
+          ./rclone lsf automation:workflow
+
+          # Verify file exists
+          FILE_FOUND=$(./rclone lsf automation:workflow | grep "^mac_intel.txt$" || true)
+          if [ -z "$FILE_FOUND" ]; then
+            echo "File not found on remote!"
+            exit 1
+          else
+            echo "File verified: $FILE_FOUND"
+          fi
+
+          echo "Delete the uploaded file"
+          ./rclone delete  automation:workflow
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rclone-mac-amd64
+          path: ./rclone
+
+  build-mac-arm:
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-14
+    # needs: zus-tests
+    if: |
+      ${{ github.event.inputs.build_type == 'mac-arm' }} ||
+      ${{ github.event.inputs.build_type == 'all' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go clean -cache -modcache -testcache
+      - run: make build-mac-arm
+      - name: Create ~/.zcn and add wallet.json and config.yaml
+        run: |
+          mkdir -p ~/.zcn
+           printf '%s' "${{ secrets.ZCN_WALLET_JSON }}" | base64 -d > ~/.zcn/wallet.json
+           printf '%s' "${{ secrets.ZCN_CONFIG_YAML }}" > ~/.zcn/config.yaml
+
+      - name: Setup rclone Configuration
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
+      - name: Funcionality Test
+        run: |
+          # Create a dummy file
+          echo "This is a test file for Züs upload." > mac_arm.txt
+          
+          echo "Upload the dummy file to Züs"
+          ./rclone copy mac_arm.txt automation:workflow
+
+          echo "List the uploaded file"
+          echo "Listing uploaded file:"
+          ./rclone lsf automation:workflow
+
+          # Verify file exists
+          FILE_FOUND=$(./rclone lsf automation:workflow | grep "^mac_arm.txt$" || true)
+          if [ -z "$FILE_FOUND" ]; then
+            echo "File not found on remote!"
+            exit 1
+          else
+            echo "File verified: $FILE_FOUND"
+          fi
+
+          echo "Delete the uploaded file"
+          ./rclone delete  automation:workflow
+
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rclone-mac-arm64
+          path: ./rclone
