@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/0chain/gosdk/constants"
 	"github.com/0chain/gosdk/core/client"
@@ -35,6 +36,10 @@ var (
 		DefaultTimeoutAsync:   5 * time.Second,
 		DefaultBatchSizeAsync: 100,
 	}
+)
+
+const (
+	empty_string_md5_hash = "d41d8cd98f00b204e9800998ecf8427e"
 )
 
 type Options struct {
@@ -91,6 +96,11 @@ func init() {
 			},
 		}, defaultBatcherOptions.FsOptions("zus")...),
 	})
+}
+
+// Validates if the path is a valid UTF-8 string
+func isValidUTF8Path(path string) bool {
+	return utf8.ValidString(path)
 }
 
 // removes newlines, tab spaces and extra unecessary
@@ -386,9 +396,14 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 // Mkdir creates the directory if it doesn't exist
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 	remotepath := path.Join(f.root, dir)
+	//Validate if the path is a valid UTF-8 string
+	if !isValidUTF8Path(remotepath) {
+		return fmt.Errorf("invalid UTF-8 characters in path: %s", remotepath)
+	}
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationCreateDir,
 		RemotePath:    remotepath,
+		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	return err
@@ -420,6 +435,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    remotepath,
+		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	return err
@@ -435,6 +451,10 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 	level := len(strings.Split(strings.TrimSuffix(remotepath, "/"), "/"))
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
 	if err != nil {
+		// If the directory doesn't exist, we return an error
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+			return fs.ErrorDirNotFound
+		}
 		return err
 	}
 	if len(oREsult.Refs) == 0 {
@@ -446,8 +466,15 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    remotepath,
+		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+
+	// After successful deletion, we should throw the DirNotFound error for purged directory
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		return fs.ErrorDirNotFound
+	}
+
 	return err
 }
 
@@ -619,6 +646,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 			sdk.WithEncrypt(o.fs.opts.Encrypt),
 		},
 		StreamUpload: isStreamUpload,
+		PreservePath: true,
 	}
 	err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	if err != nil {
@@ -632,6 +660,16 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 }
 
 func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpdate bool) (err error) {
+	// If the file size is 0, we return an error
+	if !toUpdate && src.Size() == 0 {
+		return fs.ErrorCantUploadEmptyFiles
+	}
+
+	//Validate if the path is a valid UTF-8 string
+	if !isValidUTF8Path(o.remote) {
+		return fmt.Errorf("invalid UTF-8 characters in path: %s", o.remote)
+	}
+
 	mp := make(map[string]string)
 	modified := src.ModTime(ctx)
 	mp["rclone:mtime"] = modified.Format(time.RFC3339)
@@ -665,6 +703,7 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 			sdk.WithEncrypt(o.fs.opts.Encrypt),
 		},
 		StreamUpload: isStreamUpload,
+		PreservePath: true,
 	}
 	if toUpdate {
 		opRequest.OperationType = constants.FileOperationUpdate
@@ -717,6 +756,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		RemotePath:    srcObj.remote, // Full source path, e.g., /directory/file.extension
 		DestPath:      dstDir,        // Target directory path
 		DestName:      dstName,       // Target file name
+		PreservePath:  true,          // Preserve the original path of the file
 	}
 
 	// filesystem check
@@ -754,6 +794,7 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    o.remote,
+		PreservePath:  true,
 	}
 
 	// filesystem check
@@ -809,6 +850,11 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 	o.encrypted = ref.EncryptedKey != ""
 	o.md5 = ref.ActualFileHash
 	o.mimeType = ref.MimeType
+
+	//If the file size is 0, we set the md5 to the default value
+	if o.size == 0 {
+		o.md5 = empty_string_md5_hash
+	}
 	return nil
 }
 
@@ -836,6 +882,11 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 	o.encrypted = ref.EncryptedKey != ""
 	o.md5 = ref.ActualFileHash
 	o.mimeType = ref.MimeType
+
+	//If the file size is 0, we set the md5 to the default value
+	if o.size == 0 {
+		o.md5 = empty_string_md5_hash
+	}
 	return nil
 }
 
@@ -871,6 +922,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		RemotePath:    srcZus.remote, // full source path from original Fs
 		DestPath:      dstDir,
 		DestName:      dstName,
+		PreservePath:  true,
 	}
 
 	var err error
