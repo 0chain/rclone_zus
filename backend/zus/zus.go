@@ -38,6 +38,10 @@ var (
 	}
 )
 
+const (
+	empty_string_md5_hash = "d41d8cd98f00b204e9800998ecf8427e"
+)
+
 type Options struct {
 	AllocationID string        `config:"allocation_id"`
 	ConfigDir    string        `config:"config_dir"`
@@ -849,7 +853,7 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 
 	//If the file size is 0, we set the md5 to the default value
 	if o.size == 0 {
-		o.md5 = "d41d8cd98f00b204e9800998ecf8427e"
+		o.md5 = empty_string_md5_hash
 	}
 	return nil
 }
@@ -881,7 +885,7 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 
 	//If the file size is 0, we set the md5 to the default value
 	if o.size == 0 {
-		o.md5 = "d41d8cd98f00b204e9800998ecf8427e"
+		o.md5 = empty_string_md5_hash
 	}
 	return nil
 }
