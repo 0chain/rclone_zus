@@ -3,7 +3,7 @@ module github.com/0chain/rclone_zus
 go 1.23.4
 
 require (
-	github.com/0chain/gosdk v1.20.6
+	github.com/0chain/gosdk v1.20.9
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/rclone/rclone v1.69.2
 	github.com/stretchr/testify v1.10.0
