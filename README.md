@@ -75,6 +75,19 @@ This backend implementation allows developers, DevOps teams, and cloud users to:
 
 - Fast Sync: Avoid redundant uploads with batch commit
 
+### Allocation Performance
+
+**For reliable performance:**
+- Use Züs blobbers usually provide better stability and performance
+
+### Configuration Tips
+
+**Finding rclone.conf:**
+To locate your rclone configuration file, simply use:
+```bash
+./rclone config file
+```
+
 ## Configuration
 
 **Prerequisites**
@@ -247,20 +260,76 @@ Example: create new direcotry in the root (This example shows new directory name
 
 **Copy** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
 
-    rclone copy <remote name>:<source path> <remote name>:<destination path>    
+    `rclone copy <source_remote>:<source_path> <target_remote>:<target_path>` 
     
-Example
+- **Note**: Copy/move/sync commands only work within the same remote (same allocation). You cannot copy/move/sync across two different remotes (different allocations). 
 
-    rclone copy myZus:/sourcefilesDir/ myZus:/destinationDir/
+**Local to Züs Examples:**
+```bash
+# Windows example - copying from local Windows path to Züs remote
+rclone copy "C:\Users\Murica\OneDrive\Desktop\New folder" myZus:/testDirectory
+
+# Linux/macOS example - copying from local Unix path to Züs remote  
+rclone copy /home/user/documents myZus:/backup
+```
+
+**Züs to Local Examples:**
+```bash
+# Copying from Züs remote to local directory
+rclone copy myZus:/documents /home/user/downloads
+```
+
+**Cross-Cloud Backup Examples (Google Drive ↔ Züs):**
+```bash
+# Google Drive to Züs backup (source: gdrive, target: myZus)
+rclone copy gdrive:important-files myZus:/backup
+
+# Züs to Google Drive backup (source: myZus, target: gdrive)
+rclone copy myZus:/documents gdrive:zus-backup
+```
+
+**Same Remote Operations (within same allocation):**
+```bash
+# Copying within the same Züs remote (source: myZus, target: myZus)
+rclone copy myZus:/sourcefilesDir/ myZus:/destinationDir/
+```
 
 
 **Move** from source to destination `(Local to Remote, Remote to Remote, Remote to Local)`
 
-    rclone move <remote name>:<source path> <remote name>:<destination path>    
+    `rclone move <source_remote>:<source_path> <target_remote>:<target_path>` 
     
-Example
+- **Cross-Remote Limitation**: Same limitation as copy - only works within the same remote/allocation
 
-    rclone move myZus:/sourcefilesDir/ myZus:/destinationDir/
+**Local to Züs Examples:**
+```bash
+# Windows example - moving from local Windows path to Züs remote
+rclone move "C:\Users\ABC\Desktop\New folder" myZus:/testDirectory
+
+# Linux/macOS example - moving from local Unix path to Züs remote
+rclone move /home/user/documents myZus:/backup
+```
+
+**Züs to Local Examples:**
+```bash
+# Moving from Züs remote to local directory
+rclone move myZus:/documents /home/user/downloads
+```
+
+**Cross-Cloud Examples (Google Drive ↔ Züs):**
+```bash
+# Google Drive to Züs (source remote: gdrive, target remote: myZus)
+rclone move gdrive:important-files myZus:/backup
+
+# Züs to Google Drive (source remote: myZus, target remote: gdrive)
+rclone move myZus:/documents gdrive:zus-backup
+```
+
+**Same Remote Operations (within same allocation):**
+```bash
+# Moving within the same Züs remote (source remote: myZus, target remote: myZus)
+rclone move myZus:/sourcefilesDir/ myZus:/destinationDir/
+```
 
 Sync `/home/local/directory` to the remote path, deleting any
 excess files in the path.
