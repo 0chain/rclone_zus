@@ -1,3 +1,4 @@
+
 [<img src="https://rclone.org/img/logo_on_light__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-light-mode-only)
 [<img src="https://rclone.org/img/logo_on_dark__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-dark-mode-only)
 
@@ -79,14 +80,6 @@ This backend implementation allows developers, DevOps teams, and cloud users to:
 
 **For reliable performance:**
 - Use Züs blobbers usually provide better stability and performance
-
-### Configuration Tips
-
-**Finding rclone.conf:**
-To locate your rclone configuration file, simply use:
-```bash
-./rclone config file
-```
 
 ## Configuration
 
@@ -214,8 +207,9 @@ e) Edit this remote
 d) Delete this remote
 y/e/d> y
 ```
-
 Make sure your **rclone.conf** file is created.
+**Finding rclone.conf:**
+- To locate your rclone configuration file (`rclone.conf`) via command line, use the command `rclone config file`
 - For Windows, check %APPDATA%\rclone\rclone.conf. If you downloaded the rclone.exe, you can place the rclone.conf in the same directory as the .exe.
 - For macOS/Linux, check ~/.config/rclone/rclone.conf
 
@@ -267,7 +261,7 @@ Example: create new direcotry in the root (This example shows new directory name
 **Local to Züs Examples:**
 ```bash
 # Windows example - copying from local Windows path to Züs remote
-rclone copy "C:\Users\Murica\OneDrive\Desktop\New folder" myZus:/testDirectory
+rclone copy "C:\Users\<username>\OneDrive\Desktop\New folder" myZus:/testDirectory
 
 # Linux/macOS example - copying from local Unix path to Züs remote  
 rclone copy /home/user/documents myZus:/backup
@@ -304,7 +298,7 @@ rclone copy myZus:/sourcefilesDir/ myZus:/destinationDir/
 **Local to Züs Examples:**
 ```bash
 # Windows example - moving from local Windows path to Züs remote
-rclone move "C:\Users\ABC\Desktop\New folder" myZus:/testDirectory
+rclone move "C:\Users\<username>\Desktop\New folder" myZus:/testDirectory
 
 # Linux/macOS example - moving from local Unix path to Züs remote
 rclone move /home/user/documents myZus:/backup
