@@ -104,7 +104,9 @@ The standard way to configure your Züs wallet is by downloading it through the 
    - `allocation.txt` – The Allocation ID
    - `config.yaml` – Züs network configuration (block worker, signature scheme, etc.)
   
-<img width="1000" height="1000" alt="image" src="https://github.com/user-attachments/assets/205acb0f-9c5e-4c88-94a8-61cb41fab10c" />
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/205acb0f-9c5e-4c88-94a8-61cb41fab10c" alt="rclone_zus architecture" width="500"/>
+</p>
 
 
 #### Move Files to Config Directory
@@ -132,7 +134,9 @@ Extract the ZIP and move **all three files** to your system’s default config f
    - `config.yaml`
 5. Move them into your `.zcn` folder (`~/.zcn` or `C:\Users\...\ .zcn`) as described above.
 
-<img width="2305" height="1902" alt="image" src="https://github.com/user-attachments/assets/10af6f19-cb41-4de1-bf8e-376b5ff964cd" />
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/10af6f19-cb41-4de1-bf8e-376b5ff964cd" alt="rclone_zus architecture" width="500"/>
+</p>
 
 ### Switching Between Blimp and Vult
 If you switch between Blimp and Vult allocations, ensure that:
