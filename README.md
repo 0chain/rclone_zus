@@ -14,29 +14,29 @@
 
 ## Züs Overview 
 
-[Zus](https://zus.network/) is the first S3-compatible storage platform that’s fast, secure, and ACID-compliant operating on a zero-trust network.
+[Zus](https://zus.network/) is a blockchain-based S3-compatible storage platform that’s fast, secure, and ACID-compliant operating on a zero-trust network.
 Our goal is to deliver 10x value to customers through:
 
-- 5x better performance
-- 2x lower costs, thanks to zero egress and API fees (for non-cloud deployments), and lower security and compute costs.
+- 5x better performance due to parallel paths, limited only by the client bandwidth
+- 2x lower costs, thanks to zero egress and API fees (for non-cloud deployments), and no additional security and compute costs.
 - 2x lower carbon footprint, enabled by our erasure-coded architecture
 - Breachproof security with split-key, zero-knowledge, and erasure coded data
 - 100% dynamic availability, with ability to add or replace servers on the fly
 - Vendor neutrality, with no lock-in or dependency on a single storage provider
-- One of our customers benchmarked our platform against AWS on [s3compare.io](https://s3compare.io) showing 5x performance gains.
+- One of our customers benchmarked our platform against AWS on [s3compare.io](https://s3compare.io) showing our performance advantages.
 
 ### Core Features – Züs vs AWS S3 vs MinIO
 
 | **Feature**                              | **AWS S3**                                          | **MinIO**                                      | **Züs**                                                                                   |
 | ---------------------------------------- | --------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **Managed Infrastructure**               | Fully managed with strong global uptime             | Self-hosted; requires manual setup and scaling | Fully managed infrastructure with flexible scaling                          |
+| **Managed Infrastructure**               | Fully managed              | Self-hosted; requires manual setup and scaling | Self-hosted or Fully managed                           |
 | **Split-key Internal Breach Security**   | Not available; single-party access control          | Not available                                  | Built-in split-key security prevents internal breaches with decentralized key control      |
-| **Zero Egress Fees**                     | Charges apply for all outbound data                 | No egress fees                                 | No egress fees on outbound traffic across providers (non-cloud option)                                       |
-| **Zero API Fees**                        | Charges per API call                                | Free API access                                | Free unlimited API requests; ideal for high-frequency apps (non-cloud option)                               |
-| **Encrypted Data Sharing**               | Requires external tools or complex configuration    | Not supported natively                         | Native proxy re-encryption enables secure, private sharing of encrypted files             |
-| **Zero Trust Network**               | Not supported                                       | Not supported                                  | Zero-trust architecture ensures providers can't access file contents or user identity |
-| **ACID Compliant (Data Integrity)**      | Not ACID compliant            | Not ACID compliant                    | Fully ACID compliant to ensure consistent reads/writes and verifiable storage behavior    |
-| **Add/Swap Infrastructure (No Lock-in, 100% Dynamic Availability)** | No real-time server switching | Tied to fixed infrastructure                   | Add, remove, or swap storage providers dynamically with no lock-in for 100% dynamic availability                        |
+| **Zero Egress Fees**                     | Charges apply for all outbound data                 | No egress fees                                 | No egress fees                                        |
+| **Zero API Fees**                        | Charges per API call                                | Free API requests                                | Free API requests                               |
+| **Encrypted Data Sharing**               | Requires external tools or complex configuration    | Not supported natively                         | Native proxy re-encryption enables secure, private sharing of encrypted files & folders to anyone             |
+| **Zero Trust Network**               | Not supported                                       | Not supported                                  | Zero-trust architecture ensures client with real identity on the blockchain sign for write or read operations |
+| **ACID Compliant (Data Integrity)**      | Not ACID compliant            | Not ACID compliant                    | Fully ACID compliant for real time query and processing    |
+| **Add/Swap Servers/Providers (No Lock-in, achieve 100% Dynamic Availability)** | No real-time server switching | Tied to fixed infrastructure                   | Add, remove, or swap servers or storage providers dynamically with no lock-in to achieve 100% dynamic availability                        |
 
 ## What is rclone_zus?
 
