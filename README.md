@@ -14,7 +14,7 @@
 
 ## Züs Overview 
 
-[Zus](https://zus.network/) is a blockchain-based S3-compatible storage platform that’s fast, secure, and ACID-compliant operating on a zero-trust network.
+[Zus](https://zus.network/) is a blockchain-based, S3-compatible, breachproof, & privacy-first storage platform that’s fast, secure, and ACID-compliant operating on a zero-trust network.
 Our goal is to deliver 10x value to customers through:
 
 - 5x better performance due to parallel paths, limited only by the client bandwidth
