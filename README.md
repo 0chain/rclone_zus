@@ -302,8 +302,6 @@ y/e/d> y
 Make sure your **rclone.conf** file is created.
 **Finding rclone.conf:**
 - To locate your rclone configuration file (`rclone.conf`) via command line, use the command `rclone config file`
-- For Windows, check %APPDATA%\rclone\rclone.conf. If you downloaded the rclone.exe, you can place the rclone.conf in the same directory as the .exe.
-- For macOS/Linux, check ~/.config/rclone/rclone.conf
 
 Example rclone.conf :
 ```ini
