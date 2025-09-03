@@ -40,50 +40,38 @@ Our goal is to deliver 10x value to customers through:
 
 ## What is rclone_zus?
 
-**rclone_zus** is a custom integration of the rclone command-line tool with the Züs decentralized cloud. It enables users to interact with Züs storage using familiar rclone commands like `copy, sync, move, and ls`.
-
+**rclone_zus** is a custom backend for [rclone](https://rclone.org/) that connects directly to the Züs decentralized cloud. It lets you use familiar rclone commands—copy, sync, move, ls—to manage your files on Züs.
 This backend implementation allows developers, DevOps teams, and cloud users to:
 
-- Use rclone’s powerful CLI and scripting capabilities with Züs
+With rclone_zus, you can:
 
-- Perform efficient, **server-side batch operations** (copy, delete, move)
+- Run efficient server-side operations (copy, move, delete)
 
-- Use Züs as an S3-compatible remote via rclone without vendor lock-in
+- Automate uploads/downloads in scripts and CI/CD pipelines
 
- The zus backend is now available via -type zus in your rclone.conf file and supports advanced Züs features including:
+- Use Züs as an S3-compatible remote without vendor lock-in
 
-- `Sync & batch mode` uploads
+- Organize data across multiple allocations and Rooms via [Vult](https://vult.network) or [Blimp UI](https://blimp.network)
 
-- Server-side copy & move
+- Share both public and encrypted files instantly
 
-- Native delete, purge, and stat support
+<p align="center">
+ <img width="500" alt="rclone_zus architecture" src="https://github.com/user-attachments/assets/8589c962-b30d-40d0-839a-c0dc96d6868e" />
+</p>
 
-- Directory listings and recursive operations
+###  Why use rclone_zus?
 
-###  Why Use rclone_zus?
+- Automation Ready – ideal for scripting and DevOps
 
-- Scripting Ready: Automate uploads/downloads via shell scripts
+- Privacy by Design – encrypted, zero-trust storage on Züs
 
-- Dev & CI Friendly: Plug into CI/CD pipelines with secure Züs backend
+- Fast & Efficient – batch sync avoids redundant uploads
 
-- Zero Lock-in: Maintain open architecture with CLI-driven usage
-
-- Use [Vult](https://vult.network) or [Blimp UI](https://blimp.network) to manage and render files in a carousel view
-
-- Share both public and encrypted files or folders with anyone instantly
-
-- Seamlessly scale by managing multiple allocations via Blimp and organizing data into multiple data rooms
-
-- Fast Sync: Avoid redundant uploads with batch commit
-
-### Allocation Performance
-
-**For reliable performance:**
-- Use Züs blobbers usually provide better stability and performance
+- Scalable – manage multiple allocations through Vult or Blimp
 
 ## Configuration
 
-**Prerequisites**
+### Prerequisites
 
 Before using `rclone_zus`, you must have a wallet, allocation, and configuration files in place.
 
@@ -103,10 +91,6 @@ The standard way to configure your Züs wallet is by downloading it through the 
    - `wallet.json` – Your Züs wallet credentials
    - `allocation.txt` – The Allocation ID
    - `config.yaml` – Züs network configuration (block worker, signature scheme, etc.)
-  
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/205acb0f-9c5e-4c88-94a8-61cb41fab10c" alt="rclone_zus architecture" width="500"/>
-</p>
 
 
 #### Move Files to Config Directory
@@ -134,64 +118,24 @@ Extract the ZIP and move **all three files** to your system’s default config f
    - `config.yaml`
 5. Move them into your `.zcn` folder (`~/.zcn` or `C:\Users\...\ .zcn`) as described above.
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/10af6f19-cb41-4de1-bf8e-376b5ff964cd" alt="rclone_zus architecture" width="500"/>
-</p>
-
 ### Switching Between Blimp and Vult
-If you switch between Blimp and Vult allocations, ensure that:
+If want to continue using .zcn as your config directory, ensure that:
 
 - You replace `wallet.json` with the version linked to the correct wallet
 - You replace `allocation.txt` with the matching allocation ID
 - You can reuse `config.yaml` as long as it points to the same Züs network (e.g. mainnet)
 
-> The `rclone_zus` CLI reads `wallet.json` and `allocation.txt` from the `.zcn` folder each time a command runs.
->
+> If do not want to overwrite your files, you could create a custom config directory.
+> Then, use `rclone config` to point to this directory.
+
+### Allocation Performance
+
+**For reliable performance:**
+- Use Züs blobbers usually provide better stability and performance
 
 ### 2. Alternate Setup (CLI Method)
 
-Alternatively, you can create your wallet and allocation using the CLI.
-
-#### Steps:
-
-1. Create a wallet and allocation via [Züs CLI tools](https://docs.zus.network/zus-docs/clis)
-2. Place the following files in your `~/.zcn` folder (or Windows equivalent):
-
-##### `wallet.json`
-
-```json
-{
-  "client_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "client_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "keys": [
-    {
-      "public_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-      "private_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-    }
-  ],
-  "mnemonics": "xxxx xxxx xxxx xxxx xxxx xxxx",
-  "version": "1.0",
-  "date_created": "2023-05-03T12:44:46+05:30",
-  "nonce": 0,
-  "is_split": false
-}
-```
-
-##### `config.yaml`
-
-```yaml
-block_worker: https://mainnet.zus.network/dns
-signature_scheme: bls0chain
-min_submit: 50
-min_confirmation: 50
-confirmation_chain_length: 3
-```
-
-##### `allocation.txt`
-
-```
-<your allocation ID>
-```
+Alternatively, you can create your wallet and allocation using the [Züs CLI tools](https://docs.zus.network/zus-docs/clis)
 
 > ⚠Ensure the CLI-generated wallet matches the allocation you're trying to access.
 > This method is more error-prone for beginners and should only be used if you're familiar with the Züs CLI ecosystem.
@@ -236,19 +180,6 @@ After this, you can run it from anywhere as a normal command:
 
 Renaming it to rclone_zus helps avoid conflicts with the system-installed rclone, if present.
 
-### 4. Configure Züs SDK
-
-Ensure the following Züs config files are present in `~/.zcn/`:
-
-- `wallet.json` – Züs wallet
-- `config.yaml` – Züs network configuration
-- `allocation.txt` – Your allocation ID (64-character hex string)
-
-You can generate these using:
-
-- [Züs CLI](https://docs.zus.network/zus-docs/clis)
-- [Vult UI](https://vult.network)
-- [Blimp UI](https://blimp.software)
 
 **Remote Cofiguration**
 
