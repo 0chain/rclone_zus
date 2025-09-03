@@ -85,25 +85,113 @@ This backend implementation allows developers, DevOps teams, and cloud users to:
 
 **Prerequisites**
 
-- Have a wallet and allocation on Züs. Allocation can be created through [Blimp](blimp.software) or [Vult](vult.network)
-    - Unsure how to recover a wallet and allocation using the CLI, check steps 1-3 here: https://docs.zus.network/zus-docs/clis
-- Have your wallet.json in ~/.zcn
+Before using `rclone_zus`, you must have a wallet, allocation, and configuration files in place.
+
+### 1. Download Wallet via Blimp or Vult (Default Method)
+
+The standard way to configure your Züs wallet is by downloading it through the **Blimp** or **Vult** user interfaces. This requires no command-line setup and ensures all required files are prepared for you.
+
+#### Downloading from Blimp
+
+1. Visit [**Blimp**](https://blimp.zus.network)
+2. Navigate to **Manage Allocation**
+3. Select your allocation
+4. Click the **ellipsis (⋯)** button
+5. Choose **“Download Wallet”**
+6. Enter your **mnemonic** or **wallet password**
+7. You’ll receive a `.zip` file containing:
+   - `wallet.json` – Your Züs wallet credentials
+   - `allocation.txt` – The Allocation ID
+   - `config.yaml` – Züs network configuration (block worker, signature scheme, etc.)
+  
+<img width="1000" height="1000" alt="image" src="https://github.com/user-attachments/assets/205acb0f-9c5e-4c88-94a8-61cb41fab10c" />
+
+
+#### Move Files to Config Directory
+
+Extract the ZIP and move **all three files** to your system’s default config folder:
+
+- **Windows**:  
+  `C:\Users\<your-username>\.zcn`
+
+- **Linux/macOS**:  
+  `~/.zcn/`
+
+> If the `.zcn` folder does not exist, create it manually.
+
+---
+
+#### Downloading from Vult
+
+1. Visit [**Vult**](https://vult.zus.network)
+2. Click your **username** (top right), then go to **Profile & Wallet**
+3. Scroll to the bottom and click **“Download Wallet”**
+4. A `.zip` file will be downloaded with the same three files:
+   - `wallet.json`
+   - `allocation.txt`
+   - `config.yaml`
+5. Move them into your `.zcn` folder (`~/.zcn` or `C:\Users\...\ .zcn`) as described above.
+
+<img width="2305" height="1902" alt="image" src="https://github.com/user-attachments/assets/10af6f19-cb41-4de1-bf8e-376b5ff964cd" />
+
+### Switching Between Blimp and Vult
+If you switch between Blimp and Vult allocations, ensure that:
+
+- You replace `wallet.json` with the version linked to the correct wallet
+- You replace `allocation.txt` with the matching allocation ID
+- You can reuse `config.yaml` as long as it points to the same Züs network (e.g. mainnet)
+
+> The `rclone_zus` CLI reads `wallet.json` and `allocation.txt` from the `.zcn` folder each time a command runs.
+>
+
+### 2. Alternate Setup (CLI Method)
+
+Alternatively, you can create your wallet and allocation using the CLI.
+
+#### Steps:
+
+1. Create a wallet and allocation via [Züs CLI tools](https://docs.zus.network/zus-docs/clis)
+2. Place the following files in your `~/.zcn` folder (or Windows equivalent):
+
+##### `wallet.json`
+
 ```json
-{"client_id":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-"client_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-"keys":[{"public_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-"private_key":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}],
-"mnemonics":"xxxx xxxx xxxx xxxxx",
-"version":"1.0","date_created":"2023-05-03T12:44:46+05:30","nonce":0,"is_split":false}
+{
+  "client_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "client_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "keys": [
+    {
+      "public_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "private_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+  ],
+  "mnemonics": "xxxx xxxx xxxx xxxx xxxx xxxx",
+  "version": "1.0",
+  "date_created": "2023-05-03T12:44:46+05:30",
+  "nonce": 0,
+  "is_split": false
+}
 ```
-- Have your config.yaml in ~/.zcn
+
+##### `config.yaml`
+
 ```yaml
 block_worker: https://mainnet.zus.network/dns
 signature_scheme: bls0chain
-min_submit: 50 # in percentage
-min_confirmation: 50 # in percentage
+min_submit: 50
+min_confirmation: 50
 confirmation_chain_length: 3
 ```
+
+##### `allocation.txt`
+
+```
+<your allocation ID>
+```
+
+> ⚠Ensure the CLI-generated wallet matches the allocation you're trying to access.
+> This method is more error-prone for beginners and should only be used if you're familiar with the Züs CLI ecosystem.
+
 ## Installation & Setup
 
 This section guides you through cloning, building, and configuring rclone_zus with the Züs backend.
