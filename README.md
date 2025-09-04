@@ -70,6 +70,14 @@ With rclone_zus, you can:
 
 ## Configuration
 
+<p align="center">
+  Click the image below to watch the step-by-step guide  
+  <br><br>
+  <a href="https://www.youtube.com/watch?v=aBw3_-Bwiqw">
+    <img src="https://img.youtube.com/vi/aBw3_-Bwiqw/0.jpg" alt="How-to Video">
+  </a>
+</p>
+
 ### Prerequisites
 
 Before using `rclone_zus`, you must have a wallet, allocation, and configuration files in place.
