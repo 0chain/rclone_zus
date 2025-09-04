@@ -41,7 +41,6 @@ Our goal is to deliver 10x value to customers through:
 ## What is rclone_zus?
 
 **rclone_zus** is a custom backend for [rclone](https://rclone.org/) that connects directly to the Züs decentralized cloud. It lets you use familiar rclone commands—copy, sync, move, ls—to manage your files on Züs.
-This backend implementation allows developers, DevOps teams, and cloud users to:
 
 With rclone_zus, you can:
 
