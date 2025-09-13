@@ -135,14 +135,26 @@ Alternatively, you can create your wallet and allocation using the [Züs CLI too
 > This method is more error-prone for beginners and should only be used if you're familiar with the Züs CLI ecosystem.
 
 ## Installation & Setup
+There are two ways of installing the rclone_zus plugin: download a pre-built binary or build the binary.
 
-This section guides you through cloning, building, and configuring rclone_zus with the Züs backend.
-### 1. Clone the Repository
+### Download pre-built binary
+
+1. Go to the [releases page](https://github.com/0chain/rclone_zus/releases/tag/v1.0.4) and download the pre-built binary for your OS.
+2. Place `rclone.exe` in your desired directory
+3. Run `./rclone`in that directory. If it shows the help description, you're ready to start using rclone with Züs storage
+
+> This is the preferred method for Windows users
+
+### Build the Binary
+
+This section guides you through cloning, building, and configuring rclone_zus with the Züs backend. Ideal for Linux and MacOS.
+
+#### 1. Clone the Repository
 
     git clone https://github.com/0chain/rclone_zus.git
     cd rclone_zus
 
-### 2. Build the rclone Binary
+#### 2. Build the rclone Binary
 
 Use the provided Makefile to build the project:
 
@@ -160,7 +172,7 @@ This will build a local ./rclone binary with the Züs backend integrated.
 
 Note: If you're modifying backend code (e.g. backend/zus/zus.go), you can recompile by running the go build command again.
 
-### 3. (Optional) Install as Global Command rclone_zus
+#### 3. (Optional) Install as Global Command rclone_zus
 
 To use your custom Rclone binary without the ./ prefix, install it globally by copying it to a directory in your system's $PATH, such as /usr/local/bin:
 
