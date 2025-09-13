@@ -2,7 +2,7 @@
 [<img src="https://rclone.org/img/logo_on_light__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-light-mode-only)
 [<img src="https://rclone.org/img/logo_on_dark__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-dark-mode-only)
 
-[Rclone for Züs](#what-is-rclone_zus
+[rclone for Züs](#what-is-rclone_zus
 ) |
 [Installation](#installation--setup) |
 [Website](https://rclone.org) |
@@ -50,12 +50,12 @@ With rclone_zus, you can:
 
 - Use Züs as an S3-compatible remote without vendor lock-in
 
-- Organize data across multiple allocations and Rooms via [Vult](https://vult.network) or [Blimp UI](https://blimp.network)
+- Organize data across multiple allocations and Rooms via [Blimp UI](https://blimp.network)
 
 - Share both public and encrypted files instantly
 
 <p align="center">
- <img width="500" alt="rclone_zus architecture" src="https://github.com/user-attachments/assets/8589c962-b30d-40d0-839a-c0dc96d6868e" />
+ <img width="500" alt="rclone_zus architecture" src="https://github.com/user-attachments/assets/b2226c25-91cb-4ae2-bbd9-bd0f06a262ec" />
 </p>
 
 ###  Why use rclone_zus?
@@ -66,7 +66,7 @@ With rclone_zus, you can:
 
 - Fast & Efficient – batch sync avoids redundant uploads
 
-- Scalable – manage multiple allocations through Vult or Blimp
+- Scalable – manage multiple allocations through Blimp
 
 ## Configuration
 
@@ -82,7 +82,7 @@ With rclone_zus, you can:
 
 Before using `rclone_zus`, you must have a wallet, allocation, and configuration files in place.
 
-### 1. Download Wallet via Blimp or Vult (Default Method)
+### 1. Download Wallet via Blimp (Recommended Method)
 
 The standard way to configure your Züs wallet is by downloading it through the **Blimp** or **Vult** user interfaces. This requires no command-line setup and ensures all required files are prepared for you.
 
@@ -98,7 +98,7 @@ The standard way to configure your Züs wallet is by downloading it through the 
    - `wallet.json` – Your Züs wallet credentials
    - `allocation.txt` – The Allocation ID
    - `config.yaml` – Züs network configuration (block worker, signature scheme, etc.)
-
+> Make sure your wallet.json's "is_split" parameter is set to false
 
 #### Move Files to Config Directory
 
@@ -112,20 +112,7 @@ Extract the ZIP and move **all three files** to your system’s default config f
 
 > If the `.zcn` folder does not exist, create it manually.
 
----
-
-#### Downloading from Vult
-
-1. Visit [**Vult**](https://vult.zus.network)
-2. Click your **username** (top right), then go to **Profile & Wallet**
-3. Scroll to the bottom and click **“Download Wallet”**
-4. A `.zip` file will be downloaded with the same three files:
-   - `wallet.json`
-   - `allocation.txt`
-   - `config.yaml`
-5. Move them into your `.zcn` folder (`~/.zcn` or `C:\Users\...\ .zcn`) as described above.
-
-### Switching Between Blimp and Vult
+#### Working with Multiple Allocations
 If want to continue using .zcn as your config directory, ensure that:
 
 - You replace `wallet.json` with the version linked to the correct wallet
@@ -155,7 +142,7 @@ This section guides you through cloning, building, and configuring rclone_zus wi
     git clone https://github.com/0chain/rclone_zus.git
     cd rclone_zus
 
-### 2. Build the Rclone Binary
+### 2. Build the rclone Binary
 
 Use the provided Makefile to build the project:
 
