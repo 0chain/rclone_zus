@@ -50,6 +50,10 @@ With rclone_zus, you can:
 
 - Use Züs as an S3-compatible remote without vendor lock-in
 
+- Transfer files between different Züs wallets and allocations
+
+- Use split-key wallets for enhanced security via zauth
+
 - Organize data across multiple allocations and Rooms via [Blimp UI](https://blimp.network)
 
 - Share both public and encrypted files instantly
@@ -283,7 +287,7 @@ Example: create new direcotry in the root (This example shows new directory name
 
     `rclone copy <source_remote>:<source_path> <target_remote>:<target_path>` 
     
-- **Note**: Copy/move/sync commands only work within the same remote (same allocation). You cannot copy/move/sync across two different remotes (different allocations). 
+- **Note**: Cross-allocation transfers (between different wallets/allocations) work via a two-step process: download from source, upload to destination. See [Cross-Allocation Transfers](#cross-allocation-transfers) below.
 
 **Local to Züs Examples:**
 ```bash
@@ -320,7 +324,7 @@ rclone copy myZus:/sourcefilesDir/ myZus:/destinationDir/
 
     `rclone move <source_remote>:<source_path> <target_remote>:<target_path>` 
     
-- **Cross-Remote Limitation**: Same limitation as copy - only works within the same remote/allocation
+- **Cross-Remote Note**: Cross-allocation moves work via download + re-upload. See [Cross-Allocation Transfers](#cross-allocation-transfers) below.
 
 **Local to Züs Examples:**
 ```bash
@@ -359,6 +363,75 @@ excess files in the path.
 
 You can also check your allocation in the Blimp and Vult UI. Files should be in a folder named "directory".
 
+
+## Cross-Allocation Transfers
+
+rclone_zus supports transferring files between different Züs wallets and allocations. Since each wallet uses its own signing keys, cross-allocation transfers work via a two-step process: download from source allocation, then upload to destination allocation.
+
+### Setup
+
+Configure two separate remotes, each pointing to a different wallet and allocation:
+
+```ini
+# ~/.config/rclone/rclone.conf
+[zusA]
+type = zus
+allocation_id = <allocation_A_id>
+config_dir = /path/to/wallet_a/.zcn
+
+[zusB]
+type = zus
+allocation_id = <allocation_B_id>
+config_dir = /path/to/wallet_b/.zcn
+```
+
+Each `config_dir` must contain its own `wallet.json`, `config.yaml`, and optionally `allocation.txt`.
+
+### Transfer files
+
+```bash
+# Step 1: Download from wallet A to local staging
+rclone copy zusA:source_dir /tmp/staging/
+
+# Step 2: Upload from staging to wallet B
+rclone copy /tmp/staging/ zusB:dest_dir
+```
+
+This works for any combination of Züs remotes, and also between Züs and other cloud providers:
+
+```bash
+# AWS S3 to Züs
+rclone copy s3:my-bucket zusA:/backup
+
+# Züs to Google Drive
+rclone copy zusA:/documents gdrive:zus-backup
+```
+
+## Split-Key Wallet Support
+
+rclone_zus supports Züs split-key wallets for enhanced security. Split-key wallets split the signing key between the client and a zauth server, preventing any single party from signing transactions alone.
+
+### Configuration
+
+1. Ensure your `wallet.json` has `"is_split": true`
+2. Add the zauth server URL to your `config.yaml`:
+
+```yaml
+block_worker: https://your-network.zus.network/dns
+signature_scheme: bls0chain
+min_submit: 50
+min_confirmation: 50
+confirmation_chain_length: 3
+zauth_server: https://your-network.zus.network/zauth
+```
+
+3. Configure your rclone remote as usual. The backend automatically detects the split-key wallet and registers with the zauth server for signing operations.
+
+```bash
+# Works the same as a regular wallet
+rclone copy /local/files myZus:/remote/path
+rclone lsf myZus:/
+```
 
 ## Sync Mode Configuration
 ### Use sync mode in rclone_zus for bulk operations
