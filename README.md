@@ -412,12 +412,19 @@ rclone copy gdrive:important-files zusA:/backup
 
 ## Split-Key Wallet Support
 
-rclone_zus supports Züs split-key wallets for enhanced security. Split-key wallets split the signing key between the client and a zauth server, preventing any single party from signing transactions alone.
+rclone_zus supports Züs split-key wallets for enhanced security. Split-key wallets split the signing key between the client and a zauth server, so no single party can sign transactions alone.
 
-### Configuration
+### How it works
 
-1. Ensure your `wallet.json` has `"is_split": true`
-2. Add the zauth server URL to your `config.yaml`:
+1. **Create a split-key wallet** via the [Blimp](https://blimp.zus.network) or [Vult](https://vult.network) app. The app:
+   - Generates a standard wallet (mnemonic → keypair)
+   - Splits the private key into shares using BLS threshold cryptography
+   - Registers the key shares with zvault (encrypted backup) and distributes them to the zauth server
+   - Returns a `wallet.json` with `"is_split": true`
+
+2. **Download your wallet** from Blimp/Vult. The ZIP contains `wallet.json`, `config.yaml`, and `allocation.txt`.
+
+3. **Configure rclone_zus** as usual. Ensure `config.yaml` has the zauth server URL:
 
 ```yaml
 block_worker: https://your-network.zus.network/dns
@@ -428,13 +435,15 @@ confirmation_chain_length: 3
 zauth_server: https://your-network.zus.network/zauth
 ```
 
-3. Configure your rclone remote as usual. The backend automatically detects the split-key wallet and registers with the zauth server for signing operations.
+4. **Use rclone normally.** The backend detects `is_split: true` in the wallet and automatically registers with the zauth server. Every signing operation creates a partial signature locally, sends it to zauth, and zauth co-signs with its key shares to produce the final signature.
 
 ```bash
-# Works the same as a regular wallet
+# Works identically to a regular wallet
 rclone copy /local/files myZus:/remote/path
 rclone lsf myZus:/
 ```
+
+> You do NOT need to interact with zvault or zauth directly. The wallet creation and key distribution is handled by Blimp/Vult. rclone_zus only needs the pre-configured `wallet.json` and `config.yaml`.
 
 ## Sync Mode Configuration
 ### Use sync mode in rclone_zus for bulk operations
