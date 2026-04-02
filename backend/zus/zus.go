@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"sync"
 	"os"
 	"path"
 	"path/filepath"
@@ -31,6 +32,15 @@ import (
 )
 
 var (
+	// walletMu serializes wallet activation across multiple Fs instances.
+	// The gosdk uses global wallet state for signing blobber requests.
+	// When multiple remotes are open (cross-allocation transfers), we must
+	// switch the active wallet before each operation.
+	walletMu sync.Mutex
+
+	// sdkInitialized tracks whether InitSDK has been called (only needed once)
+	sdkInitialized bool
+
 	// batcher default options
 	defaultBatcherOptions = batcher.Options{
 		MaxBatchSize:          50,
@@ -60,10 +70,24 @@ type Fs struct {
 	name string //name of the remote
 	root string //root of the remote
 
-	opts     Options      // parsed options
-	features *fs.Features // optional features
-	alloc    *sdk.Allocation
-	batcher  *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations
+	opts            Options      // parsed options
+	features        *fs.Features // optional features
+	alloc           *sdk.Allocation
+	batcher         *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations
+	walletInfo      string // wallet JSON for this remote
+	signatureScheme string // signature scheme for this remote
+}
+
+// activateWallet switches the gosdk's global wallet state to this Fs's wallet.
+// Must be called before any blobber operation. Call deactivateWallet() when done.
+func (f *Fs) activateWallet() {
+	walletMu.Lock()
+	_ = zcncore.SetGeneralWalletInfo(f.walletInfo, f.signatureScheme)
+}
+
+// deactivateWallet releases the wallet mutex.
+func (f *Fs) deactivateWallet() {
+	walletMu.Unlock()
 }
 
 func init() {
@@ -238,11 +262,20 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		return nil, err
 	}
 	walletInfo = string(walletBytes)
-	err = client.InitSDK("{}", cfg.BlockWorker, cfg.ChainID, cfg.SignatureScheme, 0, true, cfg.MinSubmit, cfg.MinConfirmation, cfg.ConfirmationChainLength, cfg.SharderConsensous)
-	if err != nil {
-		return nil, err
+	f.walletInfo = walletInfo
+	f.signatureScheme = cfg.SignatureScheme
+
+	if !sdkInitialized {
+		err = client.InitSDK("{}", cfg.BlockWorker, cfg.ChainID, cfg.SignatureScheme, 0, true, cfg.MinSubmit, cfg.MinConfirmation, cfg.ConfirmationChainLength, cfg.SharderConsensous)
+		if err != nil {
+			return nil, err
+		}
+		conf.InitClientConfig(&cfg)
+		sdk.SetNumBlockDownloads(100)
+		sdk.SetSaveProgress(false)
+		sdk.SetLogLevel(f.opts.SdkLogLevel)
+		sdkInitialized = true
 	}
-	conf.InitClientConfig(&cfg)
 
 	err = zcncore.SetGeneralWalletInfo(walletInfo, cfg.SignatureScheme)
 	if err != nil {
@@ -252,9 +285,6 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	if client.GetClient().IsSplit {
 		zcncore.RegisterZauthServer(cfg.ZauthServer)
 	}
-	sdk.SetNumBlockDownloads(100)
-	sdk.SetSaveProgress(false)
-	sdk.SetLogLevel(f.opts.SdkLogLevel)
 	allocation, err := sdk.GetAllocation(f.opts.AllocationID)
 	if err != nil {
 		return nil, err
@@ -323,6 +353,13 @@ func (f *Fs) Features() *fs.Features {
 // This should return ErrDirNotFound if the directory isn't
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
+	f.activateWallet()
+	defer f.deactivateWallet()
+	return f.list(ctx, dir)
+}
+
+// list is the internal version that does not lock the wallet mutex.
+func (f *Fs) list(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	encodedDir := f.opts.Enc.FromStandardPath(dir)
 	remotepath := path.Join(f.root, encodedDir)
 	fs.Debug("List: ", remotepath)
@@ -395,6 +432,14 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // NewObject finds the Object at remote.  If it can't be found
 // it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
+	f.activateWallet()
+	defer f.deactivateWallet()
+	return f.newObject(ctx, remote)
+}
+
+// newObject is the internal version of NewObject that does not lock the wallet mutex.
+// Use when the caller already holds the lock.
+func (f *Fs) newObject(ctx context.Context, remote string) (fs.Object, error) {
 	remote = strings.TrimPrefix(remote, "/")
 	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(remote))
 	fs.Debug("NewObject: ", remotepath)
@@ -415,6 +460,9 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	f.activateWallet()
+	defer f.deactivateWallet()
+
 	for _, option := range options {
 		if option.Mandatory() {
 			fs.Errorf(f, "Unsupported mandatory option: %v", option)
@@ -428,9 +476,10 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	}
 
 	// Check if the file already exists; if so, update it instead of inserting
-	existing, err := f.NewObject(ctx, src.Remote())
+	// Use internal update to avoid deadlock (wallet lock already held by Put)
+	existing, err := f.newObject(ctx, src.Remote())
 	if err == nil {
-		return existing, existing.Update(ctx, in, src, options...)
+		return existing, existing.(*Object).update(ctx, in, src, options...)
 	}
 
 	err = obj.put(ctx, in, src, false)
@@ -447,6 +496,9 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 
 // Mkdir creates the directory if it doesn't exist
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
+	f.activateWallet()
+	defer f.deactivateWallet()
+
 	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationCreateDir,
@@ -461,6 +513,9 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 //
 // Returns an error if it isn't empty
 func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
+	f.activateWallet()
+	defer f.deactivateWallet()
+
 	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
 	level := len(strings.Split(strings.TrimSuffix(remotepath, "/"), "/"))
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
@@ -491,6 +546,9 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
 
 // Purge deletes all the files and the container
 func (f *Fs) Purge(ctx context.Context, dir string) error {
+	f.activateWallet()
+	defer f.deactivateWallet()
+
 	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
 	if remotepath == "" || remotepath == "." {
 		remotepath = f.root
@@ -639,11 +697,34 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 	if o.size == 0 {
 		return io.NopCloser(strings.NewReader("")), nil
 	}
-	return o.fs.alloc.DownloadObject(ctx, o.remote, rangeStart, rangeEnd)
+
+	// Buffer the entire download while holding the wallet lock.
+	// The SDK's download goroutine signs chunk requests using the active wallet,
+	// so we must keep our wallet active until the download completes.
+	o.fs.activateWallet()
+	reader, err := o.fs.alloc.DownloadObject(ctx, o.remote, rangeStart, rangeEnd)
+	if err != nil {
+		o.fs.deactivateWallet()
+		return nil, err
+	}
+	data, err := io.ReadAll(reader)
+	reader.Close()
+	o.fs.deactivateWallet()
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 // Update the object with the contents of the io.Reader, modTime and size
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (err error) {
+	o.fs.activateWallet()
+	defer o.fs.deactivateWallet()
+	return o.update(ctx, in, src, options...)
+}
+
+// update is the internal version that does not lock the wallet mutex.
+func (o *Object) update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (err error) {
 	for _, option := range options {
 		if option.Mandatory() {
 			fs.Errorf(o.fs, "Unsupported mandatory option: %v", option)
@@ -784,6 +865,13 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 
 // Remove an object
 func (o *Object) Remove(ctx context.Context) (err error) {
+	o.fs.activateWallet()
+	defer o.fs.deactivateWallet()
+	return o.remove(ctx)
+}
+
+// remove is the internal version that does not lock the wallet mutex.
+func (o *Object) remove(ctx context.Context) (err error) {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    o.remote,
@@ -887,11 +975,13 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 
 // ListR lists the objects and directories of the Fs starting from dir recursively.
 func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	f.activateWallet()
+	defer f.deactivateWallet()
 	return f.listR(ctx, dir, callback)
 }
 
 func (f *Fs) listR(ctx context.Context, dir string, callback fs.ListRCallback) error {
-	entries, err := f.List(ctx, dir)
+	entries, err := f.list(ctx, dir)
 	if err != nil {
 		return err
 	}
