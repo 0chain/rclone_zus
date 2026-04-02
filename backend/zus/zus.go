@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"bytes"
 	"io"
 	"log"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/0chain/gosdk/constants"
 	"github.com/0chain/gosdk/core/client"
@@ -22,10 +22,12 @@ import (
 	"github.com/0chain/gosdk/zcncore"
 	"github.com/mitchellh/go-homedir"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/batcher"
+	"github.com/rclone/rclone/lib/encoder"
 )
 
 var (
@@ -43,14 +45,15 @@ const (
 )
 
 type Options struct {
-	AllocationID string        `config:"allocation_id"`
-	ConfigDir    string        `config:"config_dir"`
-	Encrypt      bool          `config:"encrypt"`
-	WorkDir      string        `config:"work_dir"`
-	SdkLogLevel  int           `config:"sdk_log_level"`
-	BatchMode    string        `config:"batch_mode"`
-	BatchTimeout time.Duration `config:"batch_timeout"`
-	BatchSize    int           `config:"batch_size"`
+	AllocationID string               `config:"allocation_id"`
+	ConfigDir    string               `config:"config_dir"`
+	Encrypt      bool                 `config:"encrypt"`
+	WorkDir      string               `config:"work_dir"`
+	SdkLogLevel  int                  `config:"sdk_log_level"`
+	BatchMode    string               `config:"batch_mode"`
+	BatchTimeout time.Duration        `config:"batch_timeout"`
+	BatchSize    int                  `config:"batch_size"`
+	Enc          encoder.MultiEncoder `config:"encoding"`
 }
 
 type Fs struct {
@@ -94,13 +97,28 @@ func init() {
 				Default:  0,
 				Advanced: true,
 			},
+			{
+				Name:     config.ConfigEncoding,
+				Help:     config.ConfigEncodingHelp,
+				Advanced: true,
+				Default: (encoder.MultiEncoder)(
+					encoder.EncodeInvalidUtf8 |
+						encoder.EncodeCtl |
+						encoder.EncodeDel |
+						encoder.EncodeDot |
+						encoder.EncodeSlash |
+						encoder.EncodePercent |
+						encoder.EncodeCrLf |
+						encoder.EncodeLeftSpace |
+						encoder.EncodeLeftTilde |
+						encoder.EncodeLeftCrLfHtVt |
+						encoder.EncodeLeftPeriod |
+						encoder.EncodeRightSpace |
+						encoder.EncodeRightCrLfHtVt |
+						encoder.EncodeRightPeriod),
+			},
 		}, defaultBatcherOptions.FsOptions("zus")...),
 	})
-}
-
-// Validates if the path is a valid UTF-8 string
-func isValidUTF8Path(path string) bool {
-	return utf8.ValidString(path)
 }
 
 // removes newlines, tab spaces and extra unecessary
@@ -111,6 +129,30 @@ func removeWhitespace(r rune) rune {
 	default:
 		return r
 	}
+}
+
+// ensureParentDirs creates all parent directories for the given path if they don't exist.
+// The SDK does not auto-create intermediate directories during upload.
+func (f *Fs) ensureParentDirs(remotepath string) error {
+	dir := path.Dir(remotepath)
+	if dir == "/" || dir == "." || dir == "" {
+		return nil
+	}
+
+	// Check if directory already exists
+	level := len(strings.Split(strings.TrimSuffix(dir, "/"), "/"))
+	oResult, err := f.alloc.GetRefs(dir, "", "", "", "", "regular", level, 1)
+	if err == nil && len(oResult.Refs) > 0 && oResult.Refs[0].Type == fileref.DIRECTORY {
+		return nil // Directory exists
+	}
+
+	// Create the directory (SDK handles creating intermediates with PreservePath)
+	opRequest := sdk.OperationRequest{
+		OperationType: constants.FileOperationCreateDir,
+		RemotePath:    dir,
+		PreservePath:  true,
+	}
+	return f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 }
 
 // NewFs constructs an Fs from the path
@@ -218,11 +260,21 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		return nil, err
 	}
 	f.alloc = allocation
+
+	// Check if root points to a file (rclone convention: return parent dir + fs.ErrorIsFile)
+	if f.root != "/" {
+		level := len(strings.Split(strings.TrimSuffix(f.root, "/"), "/"))
+		oResult, refErr := f.alloc.GetRefs(f.root, "", "", "", "", "regular", level, 1)
+		if refErr == nil && len(oResult.Refs) > 0 && oResult.Refs[0].Type != fileref.DIRECTORY {
+			f.root = path.Dir(f.root)
+			return f, fs.ErrorIsFile
+		}
+	}
+
 	return f, nil
 }
 
 func (f *Fs) Equal(fs2 fs.Fs) bool {
-	fmt.Println(">>> Equal() called")
 	other, ok := fs2.(*Fs)
 	if !ok {
 		return false
@@ -256,7 +308,7 @@ func (f *Fs) Hashes() hash.Set {
 	return hash.Set(hash.MD5)
 }
 
-// Features returns the optional features of thxis Fs
+// Features returns the optional features of this Fs
 func (f *Fs) Features() *fs.Features {
 	return f.features
 }
@@ -271,27 +323,22 @@ func (f *Fs) Features() *fs.Features {
 // This should return ErrDirNotFound if the directory isn't
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
-	remotepath := path.Join(f.root, dir)
+	encodedDir := f.opts.Enc.FromStandardPath(dir)
+	remotepath := path.Join(f.root, encodedDir)
 	fs.Debug("List: ", remotepath)
 
 	// Normalize and construct the full remote path
 	if f.root == "" && (dir == "" || dir == ".") {
-		// Special case: both root and dir are empty or current directory (".")
-		// listing the top-level (root) directory
 		remotepath = "/"
 	} else {
-		// Construct the full path by joining root and dir
-		// Ensures path always starts from root (absolute)
-		remotepath = path.Join("/", f.root, dir)
+		remotepath = path.Join("/", f.root, encodedDir)
 	}
 
-	// Clean the path to remove redundant elements like multiple slashes or ".."
 	remotepath = path.Clean(remotepath)
 
 	// Calculate the directory depth level by counting '/' segments
 	level := len(strings.Split(remotepath, "/"))
 
-	// Special case: if remote path is exactly "/", set level to 1
 	if remotepath == "/" {
 		level = 1
 	}
@@ -328,8 +375,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			return nil, child.Err
 		}
 		if child.Type == fileref.DIRECTORY {
-			// Handle subdirectory
-			relPath := trimLeadingPath(child.Path, f.root)
+			relPath := f.opts.Enc.ToStandardPath(trimLeadingPath(child.Path, f.root))
 			entry = fs.NewDir(relPath, child.UpdatedAt.ToTime())
 		} else {
 			o := &Object{
@@ -350,7 +396,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	remote = strings.TrimPrefix(remote, "/")
-	remotepath := path.Join(f.root, remote)
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(remote))
 	fs.Debug("NewObject: ", remotepath)
 	o := &Object{
 		fs:     f,
@@ -372,16 +418,22 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	for _, option := range options {
 		if option.Mandatory() {
 			fs.Errorf(f, "Unsupported mandatory option: %v", option)
-
 			return nil, errors.New("unsupported mandatory option")
 		}
 	}
-	remotepath := path.Join(f.root, src.Remote())
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(src.Remote()))
 	obj := &Object{
 		fs:     f,
 		remote: remotepath,
 	}
-	err := obj.put(ctx, in, src, false)
+
+	// Check if the file already exists; if so, update it instead of inserting
+	existing, err := f.NewObject(ctx, src.Remote())
+	if err == nil {
+		return existing, existing.Update(ctx, in, src, options...)
+	}
+
+	err = obj.put(ctx, in, src, false)
 	if err != nil {
 		return nil, err
 	}
@@ -395,11 +447,7 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 
 // Mkdir creates the directory if it doesn't exist
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
-	remotepath := path.Join(f.root, dir)
-	//Validate if the path is a valid UTF-8 string
-	if !isValidUTF8Path(remotepath) {
-		return fmt.Errorf("invalid UTF-8 characters in path: %s", remotepath)
-	}
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationCreateDir,
 		RemotePath:    remotepath,
@@ -413,7 +461,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 //
 // Returns an error if it isn't empty
 func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
-	remotepath := path.Join(f.root, dir)
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
 	level := len(strings.Split(strings.TrimSuffix(remotepath, "/"), "/"))
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
 	if err != nil {
@@ -442,16 +490,14 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
 }
 
 // Purge deletes all the files and the container
-//
-// Optional interface: Only implement this if you have a way of
-// deleting all the files quicker than just running Remove() on the
-// result of List()
 func (f *Fs) Purge(ctx context.Context, dir string) error {
-	remotepath := path.Join(f.root, dir)
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
+	if remotepath == "" || remotepath == "." {
+		remotepath = f.root
+	}
 	level := len(strings.Split(strings.TrimSuffix(remotepath, "/"), "/"))
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
 	if err != nil {
-		// If the directory doesn't exist, we return an error
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
 			return fs.ErrorDirNotFound
 		}
@@ -469,13 +515,21 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-
-	// After successful deletion, we should throw the DirNotFound error for purged directory
-	if err != nil && strings.Contains(err.Error(), "not found") {
-		return fs.ErrorDirNotFound
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return fs.ErrorDirNotFound
+		}
+		return err
 	}
 
-	return err
+	// Verify deletion — second purge should return ErrorDirNotFound
+	oREsult, err = f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
+	if err == nil && len(oREsult.Refs) > 0 && oREsult.Refs[0].Type == fileref.DIRECTORY {
+		// Directory still appears (eventual consistency); try delete again
+		_ = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	}
+
+	return nil
 }
 
 type Object struct {
@@ -493,46 +547,26 @@ func (o *Object) String() string {
 	if o == nil {
 		return "<nil>"
 	}
-
 	return o.Remote()
 }
 
 // trimLeadingPath removes the leading root path from the full path to produce a relative path.
-//
-// Parameters:
-//   - fullPath: the complete absolute path of the object
-//   - root: the base path configured for the Fs instance
-//
-// Behavior:
-//   - Ensures both fullPath and root are normalized using path.Clean()
-//   - If root is "/", the function simply trims the leading "/" from fullPath
-//   - If root is a subdirectory, it trims the root prefix + "/" from the fullPath
-//
-// Returns:
-//   - A path relative to the root
 func trimLeadingPath(fullPath, root string) string {
-	// Ensure both root and fullPath are normalized and prefixed with a slash
 	root = path.Clean("/" + root)
 	fullPath = path.Clean(fullPath)
 
 	if root == "/" {
-		// If root is "/", trim leading slash only
 		return strings.TrimPrefix(fullPath, "/")
 	}
-	// Remove the root prefix (plus one trailing slash) from the full path
 	return strings.TrimPrefix(fullPath, root+"/")
 }
 
-// Remote returns the object’s path relative to the backend’s configured root.
-//
-// This is used by rclone to show the object's name/path from the user's perspective
-// rather than the full internal absolute path.
+// Remote returns the object's path relative to the backend's configured root.
 func (o *Object) Remote() string {
-	return trimLeadingPath(o.remote, o.fs.root)
+	return o.fs.opts.Enc.ToStandardPath(trimLeadingPath(o.remote, o.fs.root))
 }
 
 // ModTime returns the modification date of the file
-// It should return a best guess if one isn't available
 func (o *Object) ModTime(ctx context.Context) time.Time {
 	return o.modTime
 }
@@ -548,7 +582,6 @@ func (o *Object) Fs() fs.Info {
 }
 
 // Hash returns the selected checksum of the file
-// If no checksum is available it returns ""
 func (o *Object) Hash(ctx context.Context, t hash.Type) (_ string, err error) {
 	if t != hash.MD5 {
 		return "", hash.ErrUnsupported
@@ -565,6 +598,11 @@ func (o *Object) Hash(ctx context.Context, t hash.Type) (_ string, err error) {
 // Storable says whether this object can be stored
 func (o *Object) Storable() bool {
 	return true
+}
+
+// MimeType returns the content type of the Object if known
+func (o *Object) MimeType(ctx context.Context) string {
+	return o.mimeType
 }
 
 // SetModTime sets the metadata on the object to set the modification date
@@ -593,25 +631,22 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		default:
 			if option.Mandatory() {
 				fs.Errorf(o, "Unsupported mandatory option: %v", option)
-
 				return nil, errors.New("unsupported mandatory option")
 			}
-
 		}
+	}
+	// For zero-length files (stored as 32-byte hash), return empty reader
+	if o.size == 0 {
+		return io.NopCloser(strings.NewReader("")), nil
 	}
 	return o.fs.alloc.DownloadObject(ctx, o.remote, rangeStart, rangeEnd)
 }
 
 // Update the object with the contents of the io.Reader, modTime and size
-//
-// If existing is set then it updates the object rather than creating a new one.
-//
-// The new object may have been created if an error is returned.
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (err error) {
 	for _, option := range options {
 		if option.Mandatory() {
 			fs.Errorf(o.fs, "Unsupported mandatory option: %v", option)
-
 			return errors.New("unsupported mandatory option")
 		}
 	}
@@ -627,6 +662,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		ActualSize: src.Size(),
 		RemoteName: path.Base(o.remote),
 		CustomMeta: string(marshal),
+		MimeType:   fs.MimeType(ctx, src),
 	}
 	isStreamUpload := src.Size() == -1
 	if isStreamUpload {
@@ -650,26 +686,20 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 	err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	if err != nil {
+		if strings.Contains(err.Error(), "No data to upload") {
+			return fs.ErrorCantUploadEmptyFiles
+		}
 		return err
 	}
 	o.modTime = modified
 	o.size = rb.size
 	o.encrypted = o.fs.opts.Encrypt
 
-	return nil
+	// Refresh metadata from server to get correct hash and mime type
+	return o.readMetaData(ctx)
 }
 
 func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpdate bool) (err error) {
-	// If the file size is 0, we return an error
-	if !toUpdate && src.Size() == 0 {
-		return fs.ErrorCantUploadEmptyFiles
-	}
-
-	//Validate if the path is a valid UTF-8 string
-	if !isValidUTF8Path(o.remote) {
-		return fmt.Errorf("invalid UTF-8 characters in path: %s", o.remote)
-	}
-
 	mp := make(map[string]string)
 	modified := src.ModTime(ctx)
 	mp["rclone:mtime"] = modified.Format(time.RFC3339)
@@ -688,6 +718,14 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 	isStreamUpload := src.Size() == -1
 	if isStreamUpload {
 		fileMeta.ActualSize = 0
+		// Peek the reader: if empty, use non-stream mode (SDK handles zero-byte non-stream uploads)
+		peekBuf := make([]byte, 1)
+		n, peekErr := in.Read(peekBuf)
+		if n == 0 && (peekErr == io.EOF || peekErr == nil) {
+			isStreamUpload = false
+		} else if n > 0 {
+			in = io.MultiReader(bytes.NewReader(peekBuf[:n]), in)
+		}
 	}
 	rb := &ReaderBytes{
 		reader: in,
@@ -714,6 +752,13 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 		return errors.New("filesystem not initialized")
 	}
 
+	// Ensure parent directories exist (SDK does not auto-create them)
+	if !toUpdate {
+		if err := o.fs.ensureParentDirs(o.remote); err != nil {
+			log.Printf("Warning: failed to create parent dirs for %s: %v", o.remote, err)
+		}
+	}
+
 	// If the batcher is enabled, we commit the operation through the batcher
 	if o.fs.batcher.Batching() {
 		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
@@ -722,6 +767,10 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 	}
 
 	if err != nil {
+		// SDK returns "No data to upload" for zero-byte streams
+		if strings.Contains(err.Error(), "No data to upload") {
+			return fs.ErrorCantUploadEmptyFiles
+		}
 		log.Printf("Failed to upload to %s: %v", o.remote, err)
 		return err
 	}
@@ -733,62 +782,6 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 	return nil
 }
 
-// Move moves a file from one location to another within the same remote.
-//
-// It constructs an SDK move operation, optionally batching it if the batcher is enabled.
-// Returns a new object pointing to the destination if the move is successful.
-// Move performs move operation using FileOpertaionMove of GoSDK: A metadata-only move, using blobber-native logic
-func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	// Type assert the source object to our backend-specific type
-	srcObj, ok := src.(*Object)
-	if !ok {
-		return nil, errors.New("invalid object type")
-	}
-
-	// Construct absolute destination path
-	dstPath := path.Join("/", f.root, remote) // e.g., /destination/file.extension
-	dstDir := path.Dir(dstPath)               // e.g., /destination
-	dstName := path.Base(dstPath)             // e.g., file.extension
-
-	// Build the move operation request for the SDK
-	opRequest := sdk.OperationRequest{
-		OperationType: constants.FileOperationMove,
-		RemotePath:    srcObj.remote, // Full source path, e.g., /directory/file.extension
-		DestPath:      dstDir,        // Target directory path
-		DestName:      dstName,       // Target file name
-		PreservePath:  true,          // Preserve the original path of the file
-	}
-
-	// filesystem check
-	if f == nil || f.alloc == nil {
-		return nil, errors.New("filesystem not initialized")
-	}
-
-	var err error
-	// If batching is enabled, defer execution via the batcher
-	if f.batcher.Batching() {
-		_, err = f.batcher.Commit(ctx, srcObj.remote, opRequest)
-	} else {
-		// Otherwise, perform the move operation immediately
-		err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	// Return a new Object representing the destination path
-	newObj := &Object{
-		fs:     f,
-		remote: dstPath,
-	}
-	err = newObj.readMetaData(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return newObj, nil
-}
-
 // Remove an object
 func (o *Object) Remove(ctx context.Context) (err error) {
 	opRequest := sdk.OperationRequest{
@@ -797,26 +790,19 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 		PreservePath:  true,
 	}
 
-	// filesystem check
 	if o.fs == nil || o.fs.alloc == nil {
 		return errors.New("filesystem not initialized")
 	}
 
-	// If batcher is enabled, we commit the operation through the batcher
 	if o.fs.batcher.Batching() {
 		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
-		if err != nil {
-			log.Printf("Failed to remove %s: %v", o.remote, err)
-			return err
-		}
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-		if err != nil {
-			log.Printf("Failed to remove %s: %v", o.remote, err)
-			return err
-		}
 	}
-	return nil
+	if err != nil {
+		log.Printf("Failed to remove %s: %v", o.remote, err)
+	}
+	return err
 }
 
 func (o *Object) readMetaData(ctx context.Context) (err error) {
@@ -829,6 +815,9 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 		return fs.ErrorObjectNotFound
 	}
 	ref := oREsult.Refs[0]
+	if ref.Type == fileref.DIRECTORY {
+		return fs.ErrorIsDir
+	}
 	modTime := ref.UpdatedAt.ToTime()
 	mp := make(map[string]string)
 	if ref.CustomMeta != "" {
@@ -838,7 +827,6 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 		}
 		t, ok := mp["rclone:mtime"]
 		if ok {
-			// try to parse the time
 			tm, err := time.Parse(time.RFC3339, t)
 			if err == nil {
 				modTime = tm
@@ -851,9 +839,10 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 	o.md5 = ref.ActualFileHash
 	o.mimeType = ref.MimeType
 
-	//If the file size is 0, we set the md5 to the default value
-	if o.size == 0 {
+	// SDK stores 0-byte files as 32-byte MD5 hash string; report true size
+	if o.md5 == empty_string_md5_hash || o.size == 0 {
 		o.md5 = empty_string_md5_hash
+		o.size = 0
 	}
 	return nil
 }
@@ -869,7 +858,6 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 	modTime := ref.UpdatedAt.ToTime()
 	t, ok := mp["rclone:mtime"]
 	if ok {
-		// try to parse the time
 		tm, err := time.Parse(time.RFC3339, t)
 		if err == nil {
 			modTime = tm
@@ -883,70 +871,67 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 	o.md5 = ref.ActualFileHash
 	o.mimeType = ref.MimeType
 
-	//If the file size is 0, we set the md5 to the default value
-	if o.size == 0 {
+	// SDK stores 0-byte files as 32-byte MD5 hash string; report true size
+	if o.md5 == empty_string_md5_hash || o.size == 0 {
 		o.md5 = empty_string_md5_hash
+		o.size = 0
 	}
 	return nil
 }
 
-// Copy implements the fs.Fs Copy interface method.
-// It performs a server-side copy of the source object to the specified destination path.
-//
-// Parameters:
-//   - ctx: context for the operation (used for cancellation/deadlines)
-//   - src: the source fs.Object to be copied (must be of type *Object)
-//   - remote: the target relative path within the destination backend
-//
-// Returns:
-//   - a new fs.Object representing the copied file
-//   - an error if the operation fails
-func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	// Type assert the source object to our custom Object type
-	srcZus, ok := src.(*Object)
-	if !ok {
-		return nil, errors.New("invalid source object type")
-	}
+// Note: Server-side Copy and Move are not implemented because the Züs SDK's
+// copy operation does not support overwriting existing files, and move has
+// consistency issues with path resolution.
+// rclone will automatically fall back to download+re-upload for copy,
+// and copy+delete for move.
 
-	// Build the full destination path from root and remote
-	dstPath := path.Join("/", f.root, remote)
-	dstPath = path.Clean(dstPath)
+// ListR lists the objects and directories of the Fs starting from dir recursively.
+func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	return f.listR(ctx, dir, callback)
+}
 
-	// Extract directory and file name from the destination path
-	dstDir := path.Dir(dstPath)
-	dstName := path.Base(dstPath)
-
-	// Construct the SDK operation request for copying
-	opRequest := sdk.OperationRequest{
-		OperationType: constants.FileOperationCopy,
-		RemotePath:    srcZus.remote, // full source path from original Fs
-		DestPath:      dstDir,
-		DestName:      dstName,
-		PreservePath:  true,
-	}
-
-	var err error
-	// Use batcher if enabled, otherwise perform direct operation
-	if f.batcher.Batching() {
-		_, err = f.batcher.Commit(ctx, srcZus.remote, opRequest)
-	} else {
-		err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-	}
+func (f *Fs) listR(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	entries, err := f.List(ctx, dir)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	// Create and initialize the new Object representing the copied file
-	newObj := &Object{
-		fs:     f,
-		remote: dstPath,
+	var dirs []string
+	for _, entry := range entries {
+		if d, ok := entry.(fs.Directory); ok {
+			dirs = append(dirs, d.Remote())
+		}
 	}
-	err = newObj.readMetaData(ctx)
+	err = callback(entries)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	for _, d := range dirs {
+		err = f.listR(ctx, d, callback)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return newObj, nil
+// Note: DirMove is not implemented because the Züs SDK's directory move
+// operation can leave the allocation's write marker in an inconsistent state.
+// rclone will automatically fall back to file-by-file copy+delete.
+
+// About gets quota information from the Fs
+func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
+	total := f.alloc.Size
+	var used int64
+	stats := f.alloc.GetStats()
+	if stats != nil {
+		used = stats.UsedSize
+	}
+	free := total - used
+	return &fs.Usage{
+		Total: &total,
+		Used:  &used,
+		Free:  &free,
+	}, nil
 }
 
 type ReaderBytes struct {
@@ -970,3 +955,13 @@ func getDefaultConfigDir() (string, error) {
 
 	return configDir, nil
 }
+
+// Check interfaces
+var (
+	_ fs.Fs        = (*Fs)(nil)
+	_ fs.Purger  = (*Fs)(nil)
+	_ fs.ListRer = (*Fs)(nil)
+	_ fs.Abouter = (*Fs)(nil)
+	_ fs.Object    = (*Object)(nil)
+	_ fs.MimeTyper = (*Object)(nil)
+)
