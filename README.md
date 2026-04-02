@@ -287,7 +287,7 @@ Example: create new direcotry in the root (This example shows new directory name
 
     `rclone copy <source_remote>:<source_path> <target_remote>:<target_path>` 
     
-- **Note**: Cross-allocation transfers (between different wallets/allocations) work via a two-step process: download from source, upload to destination. See [Cross-Allocation Transfers](#cross-allocation-transfers) below.
+- **Note**: Cross-allocation transfers between different wallets are fully supported. See [Cross-Allocation Transfers](#cross-allocation-transfers).
 
 **Local to Züs Examples:**
 ```bash
@@ -324,7 +324,7 @@ rclone copy myZus:/sourcefilesDir/ myZus:/destinationDir/
 
     `rclone move <source_remote>:<source_path> <target_remote>:<target_path>` 
     
-- **Cross-Remote Note**: Cross-allocation moves work via download + re-upload. See [Cross-Allocation Transfers](#cross-allocation-transfers) below.
+- **Cross-Remote Note**: Cross-allocation moves are supported. See [Cross-Allocation Transfers](#cross-allocation-transfers).
 
 **Local to Züs Examples:**
 ```bash
@@ -366,7 +366,7 @@ You can also check your allocation in the Blimp and Vult UI. Files should be in 
 
 ## Cross-Allocation Transfers
 
-rclone_zus supports transferring files between different Züs wallets and allocations. Since each wallet uses its own signing keys, cross-allocation transfers work via a two-step process: download from source allocation, then upload to destination allocation.
+rclone_zus supports transferring files between different Züs wallets and allocations in a single command. Configure two separate remotes and copy directly:
 
 ### Setup
 
@@ -390,14 +390,14 @@ Each `config_dir` must contain its own `wallet.json`, `config.yaml`, and optiona
 ### Transfer files
 
 ```bash
-# Step 1: Download from wallet A to local staging
-rclone copy zusA:source_dir /tmp/staging/
+# Direct cross-wallet copy in a single command
+rclone copy zusA:source_dir zusB:dest_dir
 
-# Step 2: Upload from staging to wallet B
-rclone copy /tmp/staging/ zusB:dest_dir
+# Sync between allocations
+rclone sync zusA:data zusB:backup
 ```
 
-This works for any combination of Züs remotes, and also between Züs and other cloud providers:
+This also works between Züs and other cloud providers:
 
 ```bash
 # AWS S3 to Züs
@@ -405,6 +405,9 @@ rclone copy s3:my-bucket zusA:/backup
 
 # Züs to Google Drive
 rclone copy zusA:/documents gdrive:zus-backup
+
+# Google Drive to Züs
+rclone copy gdrive:important-files zusA:/backup
 ```
 
 ## Split-Key Wallet Support
