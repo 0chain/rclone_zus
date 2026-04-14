@@ -268,3 +268,4 @@ require (
 	storj.io/picobuf v0.0.3 // indirect
 	storj.io/uplink v1.13.1 // indirect
 )
+replace github.com/0chain/gosdk => /root/Code/gosdk
