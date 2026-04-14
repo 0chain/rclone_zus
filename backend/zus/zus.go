@@ -32,11 +32,10 @@ import (
 )
 
 var (
-	// walletMu serializes wallet activation across multiple Fs instances.
-	// The gosdk uses global wallet state for signing blobber requests.
-	// When multiple remotes are open (cross-allocation transfers), we must
-	// switch the active wallet before each operation.
-	walletMu sync.Mutex
+	// walletMu: RLock allows concurrent ops on the same active wallet;
+	// full Lock is taken only when SWITCHING wallets (cross-allocation transfers).
+	walletMu sync.RWMutex
+	activeWalletInfo string
 
 	// sdkInitialized tracks whether InitSDK has been called (only needed once)
 	sdkInitialized bool
@@ -78,16 +77,28 @@ type Fs struct {
 	signatureScheme string // signature scheme for this remote
 }
 
-// activateWallet switches the gosdk's global wallet state to this Fs's wallet.
-// Must be called before any blobber operation. Call deactivateWallet() when done.
+// activateWallet ensures this Fs's wallet is loaded in the gosdk, then holds an RLock
+// for the duration of the op. Ops on the same wallet run concurrently; a wallet switch
+// blocks until all in-flight ops complete.
 func (f *Fs) activateWallet() {
-	walletMu.Lock()
-	_ = zcncore.SetGeneralWalletInfo(f.walletInfo, f.signatureScheme)
+	for {
+		walletMu.RLock()
+		if activeWalletInfo == f.walletInfo {
+			return
+		}
+		walletMu.RUnlock()
+		walletMu.Lock()
+		if activeWalletInfo != f.walletInfo {
+			_ = zcncore.SetGeneralWalletInfo(f.walletInfo, f.signatureScheme)
+			activeWalletInfo = f.walletInfo
+		}
+		walletMu.Unlock()
+	}
 }
 
-// deactivateWallet releases the wallet mutex.
+// deactivateWallet releases the RLock held by activateWallet.
 func (f *Fs) deactivateWallet() {
-	walletMu.Unlock()
+	walletMu.RUnlock()
 }
 
 func init() {
