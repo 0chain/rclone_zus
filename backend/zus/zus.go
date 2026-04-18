@@ -1,6 +1,8 @@
 package zus
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,10 +18,11 @@ import (
 	"time"
 
 	"github.com/0chain/gosdk/constants"
-	"github.com/0chain/gosdk/core/client"
 	"github.com/0chain/gosdk/core/conf"
+	"github.com/0chain/gosdk/core/sys"
 	"github.com/0chain/gosdk/zboxcore/fileref"
 	"github.com/0chain/gosdk/zboxcore/sdk"
+	zboxClient "github.com/0chain/gosdk/zboxcore/client"
 	"github.com/0chain/gosdk/zcncore"
 	"github.com/mitchellh/go-homedir"
 	"github.com/rclone/rclone/fs"
@@ -29,14 +32,14 @@ import (
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/batcher"
 	"github.com/rclone/rclone/lib/encoder"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
-	// walletMu serializes wallet activation across multiple Fs instances.
-	// The gosdk uses global wallet state for signing blobber requests.
-	// When multiple remotes are open (cross-allocation transfers), we must
-	// switch the active wallet before each operation.
-	walletMu sync.Mutex
+	// walletMu: RLock allows concurrent ops on the same active wallet;
+	// full Lock is taken only when SWITCHING wallets (cross-allocation transfers).
+	walletMu sync.RWMutex
+	activeWalletInfo string
 
 	// sdkInitialized tracks whether InitSDK has been called (only needed once)
 	sdkInitialized bool
@@ -60,10 +63,15 @@ type Options struct {
 	Encrypt      bool                 `config:"encrypt"`
 	WorkDir      string               `config:"work_dir"`
 	SdkLogLevel  int                  `config:"sdk_log_level"`
-	BatchMode    string               `config:"batch_mode"`
-	BatchTimeout time.Duration        `config:"batch_timeout"`
-	BatchSize    int                  `config:"batch_size"`
-	Enc          encoder.MultiEncoder `config:"encoding"`
+	BatchMode        string               `config:"batch_mode"`
+	BatchTimeout     time.Duration        `config:"batch_timeout"`
+	BatchSize        int                  `config:"batch_size"`
+	PoolWorkers      int                  `config:"pool_workers"`
+	PoolBatchCount   int                  `config:"pool_batch_count"`
+	PoolBatchBytes   int64                `config:"pool_batch_bytes"`
+	PoolWaitMs       int                  `config:"pool_wait_ms"`
+	LockedBlobbersCap int                 `config:"locked_blobbers_cap"`
+	Enc              encoder.MultiEncoder `config:"encoding"`
 }
 
 type Fs struct {
@@ -73,21 +81,40 @@ type Fs struct {
 	opts            Options      // parsed options
 	features        *fs.Features // optional features
 	alloc           *sdk.Allocation
-	batcher         *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations
+	batcher         *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations (legacy, unused by put)
+	pool            *uploadPool                                       // custom N-worker batch pool
 	walletInfo      string // wallet JSON for this remote
 	signatureScheme string // signature scheme for this remote
+
+	// dirCache: paths known to exist as directories. Avoids repeated GetRefs
+	// calls when many put() goroutines race on the same parent path.
+	dirCache sync.Map // map[string]struct{}
+	dirSF    singleflight.Group
 }
 
-// activateWallet switches the gosdk's global wallet state to this Fs's wallet.
-// Must be called before any blobber operation. Call deactivateWallet() when done.
+// activateWallet ensures this Fs's wallet is loaded in the gosdk, then holds an RLock
+// for the duration of the op. Ops on the same wallet run concurrently; a wallet switch
+// blocks until all in-flight ops complete.
 func (f *Fs) activateWallet() {
-	walletMu.Lock()
-	_ = zcncore.SetGeneralWalletInfo(f.walletInfo, f.signatureScheme)
+	for {
+		walletMu.RLock()
+		if activeWalletInfo == f.walletInfo {
+			return
+		}
+		walletMu.RUnlock()
+		walletMu.Lock()
+		if activeWalletInfo != f.walletInfo {
+			_ = zcncore.SetWalletInfo(f.walletInfo, false)
+			_ = zboxClient.PopulateClient(f.walletInfo, f.signatureScheme)
+			activeWalletInfo = f.walletInfo
+		}
+		walletMu.Unlock()
+	}
 }
 
-// deactivateWallet releases the wallet mutex.
+// deactivateWallet releases the RLock held by activateWallet.
 func (f *Fs) deactivateWallet() {
-	walletMu.Unlock()
+	walletMu.RUnlock()
 }
 
 func init() {
@@ -141,6 +168,36 @@ func init() {
 						encoder.EncodeRightCrLfHtVt |
 						encoder.EncodeRightPeriod),
 			},
+			{
+				Name:     "pool_workers",
+				Help:     "Number of parallel commit-batch workers for uploads (default 1; each worker serialises at blobber WM-lock, so >1 worker adds latency without throughput on single-allocation workloads).",
+				Default:  1,
+				Advanced: true,
+			},
+			{
+				Name:     "pool_batch_count",
+				Help:     "Max files per batch before flush (default 20).",
+				Default:  20,
+				Advanced: true,
+			},
+			{
+				Name:     "pool_batch_bytes",
+				Help:     "Max bytes per batch before flush (default 128 MiB).",
+				Default:  int64(128 * 1024 * 1024),
+				Advanced: true,
+			},
+			{
+				Name:     "locked_blobbers_cap",
+				Help:     "Max concurrent WM-lock holders per blobber (default 1; set to 5 for higher WM parallelism when blobber supports it — zs3server uses 5).",
+				Default:  1,
+				Advanced: true,
+			},
+			{
+				Name:     "pool_wait_ms",
+				Help:     "Batch-flush timeout ms (default 2000; lets small files accumulate into one WM-commit; raise further for bigger batches).",
+				Default:  2000,
+				Advanced: true,
+			},
 		}, defaultBatcherOptions.FsOptions("zus")...),
 	})
 }
@@ -157,26 +214,56 @@ func removeWhitespace(r rune) rune {
 
 // ensureParentDirs creates all parent directories for the given path if they don't exist.
 // The SDK does not auto-create intermediate directories during upload.
+//
+// Hot path: N concurrent put() goroutines to files under the same parent all call
+// this. Without coordination, each would issue GetRefs + (maybe) CreateDir to blobbers,
+// racing WriteMarker mutex acquisitions on the same path — massive contention and
+// retries. We use a sync.Map cache of "known-exists" paths plus a singleflight.Group
+// so only one probe (and one CreateDir, if needed) runs per distinct dir at a time.
 func (f *Fs) ensureParentDirs(remotepath string) error {
 	dir := path.Dir(remotepath)
 	if dir == "/" || dir == "." || dir == "" {
 		return nil
 	}
 
-	// Check if directory already exists
-	level := len(strings.Split(strings.TrimSuffix(dir, "/"), "/"))
-	oResult, err := f.alloc.GetRefs(dir, "", "", "", "", "regular", level, 1)
-	if err == nil && len(oResult.Refs) > 0 && oResult.Refs[0].Type == fileref.DIRECTORY {
-		return nil // Directory exists
+	// Cache hit: known-exists, skip.
+	if _, ok := f.dirCache.Load(dir); ok {
+		return nil
 	}
 
-	// Create the directory (SDK handles creating intermediates with PreservePath)
-	opRequest := sdk.OperationRequest{
-		OperationType: constants.FileOperationCreateDir,
-		RemotePath:    dir,
-		PreservePath:  true,
+	// Coalesce concurrent probes/creates for the same dir.
+	_, err, _ := f.dirSF.Do(dir, func() (interface{}, error) {
+		if _, ok := f.dirCache.Load(dir); ok {
+			return nil, nil
+		}
+		level := len(strings.Split(strings.TrimSuffix(dir, "/"), "/"))
+		oResult, gerr := f.alloc.GetRefs(dir, "", "", "", "", "regular", level, 1)
+		if gerr == nil && len(oResult.Refs) > 0 && oResult.Refs[0].Type == fileref.DIRECTORY {
+			f.cacheDirAndAncestors(dir)
+			return nil, nil
+		}
+		// SDK handles intermediates with PreservePath, so ancestors are
+		// created in one op.
+		opRequest := sdk.OperationRequest{
+			OperationType: constants.FileOperationCreateDir,
+			RemotePath:    dir,
+		}
+		if cerr := f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest}); cerr != nil {
+			return nil, cerr
+		}
+		f.cacheDirAndAncestors(dir)
+		return nil, nil
+	})
+	return err
+}
+
+// cacheDirAndAncestors marks dir and all its ancestor paths as known-exists.
+// Since CreateDir with PreservePath materializes intermediate dirs, their
+// existence is guaranteed on successful commit.
+func (f *Fs) cacheDirAndAncestors(dir string) {
+	for d := dir; d != "." && d != "/" && d != ""; d = path.Dir(d) {
+		f.dirCache.Store(d, struct{}{})
 	}
-	return f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 }
 
 // NewFs constructs an Fs from the path
@@ -266,8 +353,17 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	f.signatureScheme = cfg.SignatureScheme
 
 	if !sdkInitialized {
-		err = client.InitSDK("{}", cfg.BlockWorker, cfg.ChainID, cfg.SignatureScheme, 0, true, cfg.MinSubmit, cfg.MinConfirmation, cfg.ConfirmationChainLength, cfg.SharderConsensous)
-		if err != nil {
+		if err = sdk.InitStorageSDK(walletInfo, cfg.BlockWorker, cfg.ChainID, cfg.SignatureScheme, nil, 0); err != nil {
+			return nil, err
+		}
+		sdk.SetAllocationCacheDir("/root/.zcn/rclone_zus_alloc_cache")
+		if err = zcncore.InitZCNSDK(cfg.BlockWorker, cfg.SignatureScheme,
+			zcncore.WithChainID(cfg.ChainID),
+			zcncore.WithMinSubmit(cfg.MinSubmit),
+			zcncore.WithMinConfirmation(cfg.MinConfirmation),
+			zcncore.WithConfirmationChainLength(cfg.ConfirmationChainLength),
+			zcncore.WithSharderConsensous(cfg.SharderConsensous),
+		); err != nil {
 			return nil, err
 		}
 		conf.InitClientConfig(&cfg)
@@ -277,19 +373,52 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		sdkInitialized = true
 	}
 
-	err = zcncore.SetGeneralWalletInfo(walletInfo, cfg.SignatureScheme)
-	if err != nil {
+	if err = zcncore.SetWalletInfo(walletInfo, false); err != nil {
 		return nil, err
 	}
-
-	if client.GetClient().IsSplit {
-		zcncore.RegisterZauthServer(cfg.ZauthServer)
+	if err = zboxClient.PopulateClient(walletInfo, cfg.SignatureScheme); err != nil {
+		return nil, err
 	}
+	// zauth / split-key not supported on enterprise-blobber branch; skip RegisterZauthServer.
 	allocation, err := sdk.GetAllocation(f.opts.AllocationID)
 	if err != nil {
 		return nil, err
 	}
 	f.alloc = allocation
+
+	// Bump gosdk WM-mutex capacity so pool workers aren't all serialized
+	// at cap-1. Set before pool.submit is ever called.
+	if f.opts.LockedBlobbersCap > 0 {
+		sdk.LockedBlobbersCap = f.opts.LockedBlobbersCap
+	}
+
+	// Initialize the custom N-worker upload pool. Defaults mirror zs3server.
+	// pool_workers < 0 DISABLES the pool entirely: uploads go direct via
+	// DoMultiOperation from each of rclone --transfers goroutines. Matches
+	// the Apr-14 pre-pool behavior (106.7 MB/s baseline on 577 MB mixed).
+	w := f.opts.PoolWorkers
+	if w < 0 {
+		// f.pool stays nil; put() falls into the else branch and calls
+		// o.fs.alloc.DoMultiOperation directly for each op.
+	} else {
+		if w == 0 {
+			w = 5
+		}
+		bc := f.opts.PoolBatchCount
+		if bc <= 0 {
+			bc = 49
+		}
+		bb := f.opts.PoolBatchBytes
+		if bb <= 0 {
+			bb = 128 * 1024 * 1024
+		}
+		wm := f.opts.PoolWaitMs
+		if wm <= 0 {
+			wm = 500
+		}
+		f.pool = newUploadPool(f.alloc, w, bc, bb, wm)
+	}
+
 
 	// Check if root points to a file (rclone convention: return parent dir + fs.ErrorIsFile)
 	if f.root != "/" {
@@ -341,6 +470,19 @@ func (f *Fs) Hashes() hash.Set {
 // Features returns the optional features of this Fs
 func (f *Fs) Features() *fs.Features {
 	return f.features
+}
+
+// Shutdown is called by rclone at the end of Copy/Sync to drain pending
+// async uploads. The pool's submit() returns immediately (mirrors mc's
+// async PutObject-via-tmpfs semantics). Shutdown blocks until all in-flight
+// DoMultiOperation batches have committed to blobbers, then returns any
+// aggregated commit error so rclone reports accurate success/failure to
+// the caller.
+func (f *Fs) Shutdown(ctx context.Context) error {
+	if f.pool == nil {
+		return nil
+	}
+	return f.pool.shutdown()
 }
 
 // List the objects and directories in dir into entries.  The
@@ -475,14 +617,21 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		remote: remotepath,
 	}
 
-	// Check if the file already exists; if so, update it instead of inserting
-	// Use internal update to avoid deadlock (wallet lock already held by Put)
-	existing, err := f.newObject(ctx, src.Remote())
-	if err == nil {
-		return existing, existing.(*Object).update(ctx, in, src, options...)
+	// Skip the existence check: rclone pre-Stats via Copy machinery.
+	// The duplicated GetRefs per file dominated rclone-zus throughput.
+	// On duplicate error we fall back to Update.
+	var err error
+	if perr := obj.put(ctx, in, src, false); perr != nil {
+		// Existence races: retry as Update on duplicate error.
+		if strings.Contains(perr.Error(), "already exists") || strings.Contains(perr.Error(), "already_exists") || strings.Contains(perr.Error(), "duplicate") {
+			if uerr := obj.update(ctx, in, src, options...); uerr != nil {
+				return nil, uerr
+			}
+		} else {
+			err = perr
+		}
 	}
-
-	err = obj.put(ctx, in, src, false)
+	_ = err
 	if err != nil {
 		return nil, err
 	}
@@ -500,12 +649,25 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 	defer f.deactivateWallet()
 
 	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
-	opRequest := sdk.OperationRequest{
-		OperationType: constants.FileOperationCreateDir,
-		RemotePath:    remotepath,
-		PreservePath:  true,
+	if _, ok := f.dirCache.Load(remotepath); ok {
+		return nil
 	}
-	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	// Coalesce concurrent Mkdir calls on the same path (rclone issues
+	// many when copying a tree).
+	_, err, _ = f.dirSF.Do(remotepath, func() (interface{}, error) {
+		if _, ok := f.dirCache.Load(remotepath); ok {
+			return nil, nil
+		}
+		op := sdk.OperationRequest{
+			OperationType: constants.FileOperationCreateDir,
+			RemotePath:    remotepath,
+		}
+		if cerr := f.alloc.DoMultiOperation([]sdk.OperationRequest{op}); cerr != nil {
+			return nil, cerr
+		}
+		f.cacheDirAndAncestors(remotepath)
+		return nil, nil
+	})
 	return err
 }
 
@@ -538,7 +700,6 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    remotepath,
-		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	return err
@@ -570,7 +731,6 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    remotepath,
-		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	if err != nil {
@@ -702,7 +862,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 	// The SDK's download goroutine signs chunk requests using the active wallet,
 	// so we must keep our wallet active until the download completes.
 	o.fs.activateWallet()
-	reader, err := o.fs.alloc.DownloadObject(ctx, o.remote, rangeStart, rangeEnd)
+	reader, err := downloadObjectMem(ctx, o.fs.alloc, o.remote, rangeStart, rangeEnd)
 	if err != nil {
 		o.fs.deactivateWallet()
 		return nil, err
@@ -763,7 +923,6 @@ func (o *Object) update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 			sdk.WithEncrypt(o.fs.opts.Encrypt),
 		},
 		StreamUpload: isStreamUpload,
-		PreservePath: true,
 	}
 	err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	if err != nil {
@@ -808,8 +967,20 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 			in = io.MultiReader(bytes.NewReader(peekBuf[:n]), in)
 		}
 	}
+	// Async pool: the caller's `in` may be closed after put() returns, but
+	// the worker reads asynchronously. Drain the source into memory here
+	// so the worker has an independent reader. Cost: src.Size() bytes of
+	// transient memory per in-flight op (capped by rclone --transfers).
+	// For 100×10MB with --transfers=20: ~200 MB peak.
+	buf, err := io.ReadAll(in)
+	if err != nil {
+		return fmt.Errorf("buffer input for async pool: %w", err)
+	}
+	if isStreamUpload && fileMeta.ActualSize == 0 {
+		fileMeta.ActualSize = int64(len(buf))
+	}
 	rb := &ReaderBytes{
-		reader: in,
+		reader: bytes.NewReader(buf),
 	}
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationInsert,
@@ -822,7 +993,6 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 			sdk.WithEncrypt(o.fs.opts.Encrypt),
 		},
 		StreamUpload: isStreamUpload,
-		PreservePath: true,
 	}
 	if toUpdate {
 		opRequest.OperationType = constants.FileOperationUpdate
@@ -840,9 +1010,11 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 		}
 	}
 
-	// If the batcher is enabled, we commit the operation through the batcher
-	if o.fs.batcher.Batching() {
-		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
+	// Submit to the custom N-worker pool. Dispatcher accumulates ops by
+	// count/bytes/timeout; each worker commits a batch via a single
+	// DoMultiOperation (= 1 WM commit amortized across the batch).
+	if o.fs.pool != nil {
+		err = o.fs.pool.submit(opRequest, fileMeta.ActualSize)
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	}
@@ -857,7 +1029,12 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 	}
 
 	o.modTime = modified
-	o.size = rb.size
+	o.size = fileMeta.ActualSize
+	// Cache src md5 so rclone's post-put Hash() verify doesn't race the
+	// async pool worker (otherwise dst.Hash returns "" -> "md5 hashes differ"
+	// and rclone retries — burning seconds per file).
+	hsum := md5.Sum(buf)
+	o.md5 = hex.EncodeToString(hsum[:])
 	o.encrypted = o.fs.opts.Encrypt
 	o.mimeType = fileMeta.MimeType
 	return nil
@@ -875,7 +1052,6 @@ func (o *Object) remove(ctx context.Context) (err error) {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    o.remote,
-		PreservePath:  true,
 	}
 
 	if o.fs == nil || o.fs.alloc == nil {
@@ -1055,3 +1231,80 @@ var (
 	_ fs.Object    = (*Object)(nil)
 	_ fs.MimeTyper = (*Object)(nil)
 )
+
+
+// downloadObjectMem downloads remotePath into an in-memory buffer via
+// DownloadFileToFileHandler + sys.MemFile (which gosdk natively detects and
+// uses via WriteAt, parallel blobber fan-out). The async download is made
+// synchronous by a StatusCallback that signals Completed/Error.
+//
+// Range semantics match rclone's fs.RangeOption:
+//   - startByte < 0 && endByte >= 0 => "trailing endByte bytes" (suffix)
+//   - endByte < 0 or endByte < startByte => "from startByte to EOF"
+//   - otherwise inclusive [startByte, endByte]
+func downloadObjectMem(ctx context.Context, a *sdk.Allocation, remotePath string, startByte, endByte int64) (io.ReadCloser, error) {
+	mf := &sys.MemFile{Name: path.Base(remotePath)}
+	cb := &sdkDLDone{done: make(chan struct{}, 1)}
+	if err := a.DownloadFileToFileHandler(mf, remotePath, true, cb, true); err != nil {
+		return nil, err
+	}
+	select {
+	case <-cb.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if cb.err != nil {
+		return nil, cb.err
+	}
+	buf := mf.Buffer
+	size := int64(len(buf))
+	var lo, hi int64
+	switch {
+	case startByte < 0 && endByte >= 0:
+		lo = size - endByte
+		if lo < 0 {
+			lo = 0
+		}
+		hi = size
+	case startByte < 0:
+		lo, hi = 0, size
+	case endByte < 0 || endByte < startByte:
+		lo, hi = startByte, size
+	default:
+		lo, hi = startByte, endByte+1
+	}
+	if lo > size {
+		lo = size
+	}
+	if hi > size {
+		hi = size
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	return io.NopCloser(bytes.NewReader(buf[lo:hi])), nil
+}
+
+// sdkDLDone implements sdk.StatusCallback and signals completion on a channel.
+type sdkDLDone struct {
+	done chan struct{}
+	err  error
+}
+
+func (c *sdkDLDone) Started(allocationID, filePath string, op, totalBytes int) {}
+func (c *sdkDLDone) InProgress(allocationID, filePath string, op, completedBytes int, data []byte) {
+}
+func (c *sdkDLDone) Error(allocationID, filePath string, op int, err error) {
+	c.err = err
+	select {
+	case c.done <- struct{}{}:
+	default:
+	}
+}
+func (c *sdkDLDone) Completed(allocationID, filePath, filename, mimetype string, size, op int) {
+	select {
+	case c.done <- struct{}{}:
+	default:
+	}
+}
+func (c *sdkDLDone) RepairCompleted(filesRepaired int) {}
