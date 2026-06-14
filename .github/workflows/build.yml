@@ -70,7 +70,7 @@ jobs:
   
   build-linux:
     name: Build Linux Binary
-    runs-on: hetzner-build
+    runs-on: [self-hosted, arc-runner]
     # needs: zus-tests
     if: |
       ${{ github.event.inputs.build_type == 'linux' }} ||
@@ -132,7 +132,7 @@ jobs:
 
   build-windows:
     name: Build Windows Binary
-    runs-on: hetzner-build
+    runs-on: [self-hosted, arc-runner]
     # needs: zus-tests
     if: |
       ${{ github.event.inputs.build_type == 'windows' }} ||
@@ -191,7 +191,7 @@ jobs:
 
   build-mac-amd:
     name: Build macOS (Intel)
-    runs-on: hetzner-build
+    runs-on: [self-hosted, arc-runner]
     # needs: zus-tests
     if: |
        ${{ github.event.inputs.build_type == 'mac-amd' }} ||
@@ -250,7 +250,7 @@ jobs:
 
   build-mac-arm:
     name: Build macOS (Apple Silicon)
-    runs-on: hetzner-build
+    runs-on: [self-hosted, arc-runner]
     # needs: zus-tests
     if: |
       ${{ github.event.inputs.build_type == 'mac-arm' }} ||
