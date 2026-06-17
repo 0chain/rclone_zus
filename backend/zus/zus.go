@@ -1,34 +1,49 @@
 package zus
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"bytes"
 	"io"
 	"log"
+	"sync"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/0chain/gosdk/constants"
-	"github.com/0chain/gosdk/core/client"
 	"github.com/0chain/gosdk/core/conf"
+	"github.com/0chain/gosdk/core/sys"
 	"github.com/0chain/gosdk/zboxcore/fileref"
 	"github.com/0chain/gosdk/zboxcore/sdk"
+	zboxClient "github.com/0chain/gosdk/zboxcore/client"
 	"github.com/0chain/gosdk/zcncore"
 	"github.com/mitchellh/go-homedir"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/batcher"
+	"github.com/rclone/rclone/lib/encoder"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
+	// walletMu: RLock allows concurrent ops on the same active wallet;
+	// full Lock is taken only when SWITCHING wallets (cross-allocation transfers).
+	walletMu sync.RWMutex
+	activeWalletInfo string
+
+	// sdkInitialized tracks whether InitSDK has been called (only needed once)
+	sdkInitialized bool
+
 	// batcher default options
 	defaultBatcherOptions = batcher.Options{
 		MaxBatchSize:          50,
@@ -43,24 +58,63 @@ const (
 )
 
 type Options struct {
-	AllocationID string        `config:"allocation_id"`
-	ConfigDir    string        `config:"config_dir"`
-	Encrypt      bool          `config:"encrypt"`
-	WorkDir      string        `config:"work_dir"`
-	SdkLogLevel  int           `config:"sdk_log_level"`
-	BatchMode    string        `config:"batch_mode"`
-	BatchTimeout time.Duration `config:"batch_timeout"`
-	BatchSize    int           `config:"batch_size"`
+	AllocationID string               `config:"allocation_id"`
+	ConfigDir    string               `config:"config_dir"`
+	Encrypt      bool                 `config:"encrypt"`
+	WorkDir      string               `config:"work_dir"`
+	SdkLogLevel  int                  `config:"sdk_log_level"`
+	BatchMode        string               `config:"batch_mode"`
+	BatchTimeout     time.Duration        `config:"batch_timeout"`
+	BatchSize        int                  `config:"batch_size"`
+	PoolWorkers      int                  `config:"pool_workers"`
+	PoolBatchCount   int                  `config:"pool_batch_count"`
+	PoolBatchBytes   int64                `config:"pool_batch_bytes"`
+	PoolWaitMs       int                  `config:"pool_wait_ms"`
+	LockedBlobbersCap int                 `config:"locked_blobbers_cap"`
+	Enc              encoder.MultiEncoder `config:"encoding"`
 }
 
 type Fs struct {
 	name string //name of the remote
 	root string //root of the remote
 
-	opts     Options      // parsed options
-	features *fs.Features // optional features
-	alloc    *sdk.Allocation
-	batcher  *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations
+	opts            Options      // parsed options
+	features        *fs.Features // optional features
+	alloc           *sdk.Allocation
+	batcher         *batcher.Batcher[sdk.OperationRequest, struct{}] // batcher for operations (legacy, unused by put)
+	pool            *uploadPool                                       // custom N-worker batch pool
+	walletInfo      string // wallet JSON for this remote
+	signatureScheme string // signature scheme for this remote
+
+	// dirCache: paths known to exist as directories. Avoids repeated GetRefs
+	// calls when many put() goroutines race on the same parent path.
+	dirCache sync.Map // map[string]struct{}
+	dirSF    singleflight.Group
+}
+
+// activateWallet ensures this Fs's wallet is loaded in the gosdk, then holds an RLock
+// for the duration of the op. Ops on the same wallet run concurrently; a wallet switch
+// blocks until all in-flight ops complete.
+func (f *Fs) activateWallet() {
+	for {
+		walletMu.RLock()
+		if activeWalletInfo == f.walletInfo {
+			return
+		}
+		walletMu.RUnlock()
+		walletMu.Lock()
+		if activeWalletInfo != f.walletInfo {
+			_ = zcncore.SetWalletInfo(f.walletInfo, false)
+			_ = zboxClient.PopulateClient(f.walletInfo, f.signatureScheme)
+			activeWalletInfo = f.walletInfo
+		}
+		walletMu.Unlock()
+	}
+}
+
+// deactivateWallet releases the RLock held by activateWallet.
+func (f *Fs) deactivateWallet() {
+	walletMu.RUnlock()
 }
 
 func init() {
@@ -94,13 +148,58 @@ func init() {
 				Default:  0,
 				Advanced: true,
 			},
+			{
+				Name:     config.ConfigEncoding,
+				Help:     config.ConfigEncodingHelp,
+				Advanced: true,
+				Default: (encoder.MultiEncoder)(
+					encoder.EncodeInvalidUtf8 |
+						encoder.EncodeCtl |
+						encoder.EncodeDel |
+						encoder.EncodeDot |
+						encoder.EncodeSlash |
+						encoder.EncodePercent |
+						encoder.EncodeCrLf |
+						encoder.EncodeLeftSpace |
+						encoder.EncodeLeftTilde |
+						encoder.EncodeLeftCrLfHtVt |
+						encoder.EncodeLeftPeriod |
+						encoder.EncodeRightSpace |
+						encoder.EncodeRightCrLfHtVt |
+						encoder.EncodeRightPeriod),
+			},
+			{
+				Name:     "pool_workers",
+				Help:     "Number of parallel commit-batch workers for uploads (default 1; each worker serialises at blobber WM-lock, so >1 worker adds latency without throughput on single-allocation workloads).",
+				Default:  1,
+				Advanced: true,
+			},
+			{
+				Name:     "pool_batch_count",
+				Help:     "Max files per batch before flush (default 20).",
+				Default:  20,
+				Advanced: true,
+			},
+			{
+				Name:     "pool_batch_bytes",
+				Help:     "Max bytes per batch before flush (default 128 MiB).",
+				Default:  int64(128 * 1024 * 1024),
+				Advanced: true,
+			},
+			{
+				Name:     "locked_blobbers_cap",
+				Help:     "Max concurrent WM-lock holders per blobber (default 1; set to 5 for higher WM parallelism when blobber supports it — zs3server uses 5).",
+				Default:  1,
+				Advanced: true,
+			},
+			{
+				Name:     "pool_wait_ms",
+				Help:     "Batch-flush timeout ms (default 2000; lets small files accumulate into one WM-commit; raise further for bigger batches).",
+				Default:  2000,
+				Advanced: true,
+			},
 		}, defaultBatcherOptions.FsOptions("zus")...),
 	})
-}
-
-// Validates if the path is a valid UTF-8 string
-func isValidUTF8Path(path string) bool {
-	return utf8.ValidString(path)
 }
 
 // removes newlines, tab spaces and extra unecessary
@@ -110,6 +209,60 @@ func removeWhitespace(r rune) rune {
 		return -1
 	default:
 		return r
+	}
+}
+
+// ensureParentDirs creates all parent directories for the given path if they don't exist.
+// The SDK does not auto-create intermediate directories during upload.
+//
+// Hot path: N concurrent put() goroutines to files under the same parent all call
+// this. Without coordination, each would issue GetRefs + (maybe) CreateDir to blobbers,
+// racing WriteMarker mutex acquisitions on the same path — massive contention and
+// retries. We use a sync.Map cache of "known-exists" paths plus a singleflight.Group
+// so only one probe (and one CreateDir, if needed) runs per distinct dir at a time.
+func (f *Fs) ensureParentDirs(remotepath string) error {
+	dir := path.Dir(remotepath)
+	if dir == "/" || dir == "." || dir == "" {
+		return nil
+	}
+
+	// Cache hit: known-exists, skip.
+	if _, ok := f.dirCache.Load(dir); ok {
+		return nil
+	}
+
+	// Coalesce concurrent probes/creates for the same dir.
+	_, err, _ := f.dirSF.Do(dir, func() (interface{}, error) {
+		if _, ok := f.dirCache.Load(dir); ok {
+			return nil, nil
+		}
+		level := len(strings.Split(strings.TrimSuffix(dir, "/"), "/"))
+		oResult, gerr := f.alloc.GetRefs(dir, "", "", "", "", "regular", level, 1)
+		if gerr == nil && len(oResult.Refs) > 0 && oResult.Refs[0].Type == fileref.DIRECTORY {
+			f.cacheDirAndAncestors(dir)
+			return nil, nil
+		}
+		// SDK handles intermediates with PreservePath, so ancestors are
+		// created in one op.
+		opRequest := sdk.OperationRequest{
+			OperationType: constants.FileOperationCreateDir,
+			RemotePath:    dir,
+		}
+		if cerr := f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest}); cerr != nil {
+			return nil, cerr
+		}
+		f.cacheDirAndAncestors(dir)
+		return nil, nil
+	})
+	return err
+}
+
+// cacheDirAndAncestors marks dir and all its ancestor paths as known-exists.
+// Since CreateDir with PreservePath materializes intermediate dirs, their
+// existence is guaranteed on successful commit.
+func (f *Fs) cacheDirAndAncestors(dir string) {
+	for d := dir; d != "." && d != "/" && d != ""; d = path.Dir(d) {
+		f.dirCache.Store(d, struct{}{})
 	}
 }
 
@@ -196,33 +349,91 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		return nil, err
 	}
 	walletInfo = string(walletBytes)
-	err = client.InitSDK("{}", cfg.BlockWorker, cfg.ChainID, cfg.SignatureScheme, 0, true, cfg.MinSubmit, cfg.MinConfirmation, cfg.ConfirmationChainLength, cfg.SharderConsensous)
-	if err != nil {
+	f.walletInfo = walletInfo
+	f.signatureScheme = cfg.SignatureScheme
+
+	if !sdkInitialized {
+		if err = sdk.InitStorageSDK(walletInfo, cfg.BlockWorker, cfg.ChainID, cfg.SignatureScheme, nil, 0); err != nil {
+			return nil, err
+		}
+		sdk.SetAllocationCacheDir("/root/.zcn/rclone_zus_alloc_cache")
+		if err = zcncore.InitZCNSDK(cfg.BlockWorker, cfg.SignatureScheme,
+			zcncore.WithChainID(cfg.ChainID),
+			zcncore.WithMinSubmit(cfg.MinSubmit),
+			zcncore.WithMinConfirmation(cfg.MinConfirmation),
+			zcncore.WithConfirmationChainLength(cfg.ConfirmationChainLength),
+			zcncore.WithSharderConsensous(cfg.SharderConsensous),
+		); err != nil {
+			return nil, err
+		}
+		conf.InitClientConfig(&cfg)
+		sdk.SetNumBlockDownloads(100)
+		sdk.SetSaveProgress(false)
+		sdk.SetLogLevel(f.opts.SdkLogLevel)
+		sdkInitialized = true
+	}
+
+	if err = zcncore.SetWalletInfo(walletInfo, false); err != nil {
 		return nil, err
 	}
-	conf.InitClientConfig(&cfg)
-
-	err = zcncore.SetGeneralWalletInfo(walletInfo, cfg.SignatureScheme)
-	if err != nil {
+	if err = zboxClient.PopulateClient(walletInfo, cfg.SignatureScheme); err != nil {
 		return nil, err
 	}
-
-	if client.GetClient().IsSplit {
-		zcncore.RegisterZauthServer(cfg.ZauthServer)
-	}
-	sdk.SetNumBlockDownloads(100)
-	sdk.SetSaveProgress(false)
-	sdk.SetLogLevel(f.opts.SdkLogLevel)
+	// zauth / split-key not supported on enterprise-blobber branch; skip RegisterZauthServer.
 	allocation, err := sdk.GetAllocation(f.opts.AllocationID)
 	if err != nil {
 		return nil, err
 	}
 	f.alloc = allocation
+
+	// Bump gosdk WM-mutex capacity so pool workers aren't all serialized
+	// at cap-1. Set before pool.submit is ever called.
+	if f.opts.LockedBlobbersCap > 0 {
+		sdk.LockedBlobbersCap = f.opts.LockedBlobbersCap
+	}
+
+	// Initialize the custom N-worker upload pool. Defaults mirror zs3server.
+	// pool_workers < 0 DISABLES the pool entirely: uploads go direct via
+	// DoMultiOperation from each of rclone --transfers goroutines. Matches
+	// the Apr-14 pre-pool behavior (106.7 MB/s baseline on 577 MB mixed).
+	w := f.opts.PoolWorkers
+	if w < 0 {
+		// f.pool stays nil; put() falls into the else branch and calls
+		// o.fs.alloc.DoMultiOperation directly for each op.
+	} else {
+		if w == 0 {
+			w = 5
+		}
+		bc := f.opts.PoolBatchCount
+		if bc <= 0 {
+			bc = 49
+		}
+		bb := f.opts.PoolBatchBytes
+		if bb <= 0 {
+			bb = 128 * 1024 * 1024
+		}
+		wm := f.opts.PoolWaitMs
+		if wm <= 0 {
+			wm = 500
+		}
+		f.pool = newUploadPool(f.alloc, w, bc, bb, wm)
+	}
+
+
+	// Check if root points to a file (rclone convention: return parent dir + fs.ErrorIsFile)
+	if f.root != "/" {
+		level := len(strings.Split(strings.TrimSuffix(f.root, "/"), "/"))
+		oResult, refErr := f.alloc.GetRefs(f.root, "", "", "", "", "regular", level, 1)
+		if refErr == nil && len(oResult.Refs) > 0 && oResult.Refs[0].Type != fileref.DIRECTORY {
+			f.root = path.Dir(f.root)
+			return f, fs.ErrorIsFile
+		}
+	}
+
 	return f, nil
 }
 
 func (f *Fs) Equal(fs2 fs.Fs) bool {
-	fmt.Println(">>> Equal() called")
 	other, ok := fs2.(*Fs)
 	if !ok {
 		return false
@@ -256,9 +467,22 @@ func (f *Fs) Hashes() hash.Set {
 	return hash.Set(hash.MD5)
 }
 
-// Features returns the optional features of thxis Fs
+// Features returns the optional features of this Fs
 func (f *Fs) Features() *fs.Features {
 	return f.features
+}
+
+// Shutdown is called by rclone at the end of Copy/Sync to drain pending
+// async uploads. The pool's submit() returns immediately (mirrors mc's
+// async PutObject-via-tmpfs semantics). Shutdown blocks until all in-flight
+// DoMultiOperation batches have committed to blobbers, then returns any
+// aggregated commit error so rclone reports accurate success/failure to
+// the caller.
+func (f *Fs) Shutdown(ctx context.Context) error {
+	if f.pool == nil {
+		return nil
+	}
+	return f.pool.shutdown()
 }
 
 // List the objects and directories in dir into entries.  The
@@ -271,27 +495,29 @@ func (f *Fs) Features() *fs.Features {
 // This should return ErrDirNotFound if the directory isn't
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
-	remotepath := path.Join(f.root, dir)
+	f.activateWallet()
+	defer f.deactivateWallet()
+	return f.list(ctx, dir)
+}
+
+// list is the internal version that does not lock the wallet mutex.
+func (f *Fs) list(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
+	encodedDir := f.opts.Enc.FromStandardPath(dir)
+	remotepath := path.Join(f.root, encodedDir)
 	fs.Debug("List: ", remotepath)
 
 	// Normalize and construct the full remote path
 	if f.root == "" && (dir == "" || dir == ".") {
-		// Special case: both root and dir are empty or current directory (".")
-		// listing the top-level (root) directory
 		remotepath = "/"
 	} else {
-		// Construct the full path by joining root and dir
-		// Ensures path always starts from root (absolute)
-		remotepath = path.Join("/", f.root, dir)
+		remotepath = path.Join("/", f.root, encodedDir)
 	}
 
-	// Clean the path to remove redundant elements like multiple slashes or ".."
 	remotepath = path.Clean(remotepath)
 
 	// Calculate the directory depth level by counting '/' segments
 	level := len(strings.Split(remotepath, "/"))
 
-	// Special case: if remote path is exactly "/", set level to 1
 	if remotepath == "/" {
 		level = 1
 	}
@@ -328,8 +554,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			return nil, child.Err
 		}
 		if child.Type == fileref.DIRECTORY {
-			// Handle subdirectory
-			relPath := trimLeadingPath(child.Path, f.root)
+			relPath := f.opts.Enc.ToStandardPath(trimLeadingPath(child.Path, f.root))
 			entry = fs.NewDir(relPath, child.UpdatedAt.ToTime())
 		} else {
 			o := &Object{
@@ -349,8 +574,16 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // NewObject finds the Object at remote.  If it can't be found
 // it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
+	f.activateWallet()
+	defer f.deactivateWallet()
+	return f.newObject(ctx, remote)
+}
+
+// newObject is the internal version of NewObject that does not lock the wallet mutex.
+// Use when the caller already holds the lock.
+func (f *Fs) newObject(ctx context.Context, remote string) (fs.Object, error) {
 	remote = strings.TrimPrefix(remote, "/")
-	remotepath := path.Join(f.root, remote)
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(remote))
 	fs.Debug("NewObject: ", remotepath)
 	o := &Object{
 		fs:     f,
@@ -369,19 +602,36 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	f.activateWallet()
+	defer f.deactivateWallet()
+
 	for _, option := range options {
 		if option.Mandatory() {
 			fs.Errorf(f, "Unsupported mandatory option: %v", option)
-
 			return nil, errors.New("unsupported mandatory option")
 		}
 	}
-	remotepath := path.Join(f.root, src.Remote())
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(src.Remote()))
 	obj := &Object{
 		fs:     f,
 		remote: remotepath,
 	}
-	err := obj.put(ctx, in, src, false)
+
+	// Skip the existence check: rclone pre-Stats via Copy machinery.
+	// The duplicated GetRefs per file dominated rclone-zus throughput.
+	// On duplicate error we fall back to Update.
+	var err error
+	if perr := obj.put(ctx, in, src, false); perr != nil {
+		// Existence races: retry as Update on duplicate error.
+		if strings.Contains(perr.Error(), "already exists") || strings.Contains(perr.Error(), "already_exists") || strings.Contains(perr.Error(), "duplicate") {
+			if uerr := obj.update(ctx, in, src, options...); uerr != nil {
+				return nil, uerr
+			}
+		} else {
+			err = perr
+		}
+	}
+	_ = err
 	if err != nil {
 		return nil, err
 	}
@@ -395,17 +645,29 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 
 // Mkdir creates the directory if it doesn't exist
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
-	remotepath := path.Join(f.root, dir)
-	//Validate if the path is a valid UTF-8 string
-	if !isValidUTF8Path(remotepath) {
-		return fmt.Errorf("invalid UTF-8 characters in path: %s", remotepath)
+	f.activateWallet()
+	defer f.deactivateWallet()
+
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
+	if _, ok := f.dirCache.Load(remotepath); ok {
+		return nil
 	}
-	opRequest := sdk.OperationRequest{
-		OperationType: constants.FileOperationCreateDir,
-		RemotePath:    remotepath,
-		PreservePath:  true,
-	}
-	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	// Coalesce concurrent Mkdir calls on the same path (rclone issues
+	// many when copying a tree).
+	_, err, _ = f.dirSF.Do(remotepath, func() (interface{}, error) {
+		if _, ok := f.dirCache.Load(remotepath); ok {
+			return nil, nil
+		}
+		op := sdk.OperationRequest{
+			OperationType: constants.FileOperationCreateDir,
+			RemotePath:    remotepath,
+		}
+		if cerr := f.alloc.DoMultiOperation([]sdk.OperationRequest{op}); cerr != nil {
+			return nil, cerr
+		}
+		f.cacheDirAndAncestors(remotepath)
+		return nil, nil
+	})
 	return err
 }
 
@@ -413,7 +675,10 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 //
 // Returns an error if it isn't empty
 func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
-	remotepath := path.Join(f.root, dir)
+	f.activateWallet()
+	defer f.deactivateWallet()
+
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
 	level := len(strings.Split(strings.TrimSuffix(remotepath, "/"), "/"))
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
 	if err != nil {
@@ -435,23 +700,23 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    remotepath,
-		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	return err
 }
 
 // Purge deletes all the files and the container
-//
-// Optional interface: Only implement this if you have a way of
-// deleting all the files quicker than just running Remove() on the
-// result of List()
 func (f *Fs) Purge(ctx context.Context, dir string) error {
-	remotepath := path.Join(f.root, dir)
+	f.activateWallet()
+	defer f.deactivateWallet()
+
+	remotepath := path.Join(f.root, f.opts.Enc.FromStandardPath(dir))
+	if remotepath == "" || remotepath == "." {
+		remotepath = f.root
+	}
 	level := len(strings.Split(strings.TrimSuffix(remotepath, "/"), "/"))
 	oREsult, err := f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
 	if err != nil {
-		// If the directory doesn't exist, we return an error
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
 			return fs.ErrorDirNotFound
 		}
@@ -466,16 +731,23 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    remotepath,
-		PreservePath:  true,
 	}
 	err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-
-	// After successful deletion, we should throw the DirNotFound error for purged directory
-	if err != nil && strings.Contains(err.Error(), "not found") {
-		return fs.ErrorDirNotFound
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return fs.ErrorDirNotFound
+		}
+		return err
 	}
 
-	return err
+	// Verify deletion — second purge should return ErrorDirNotFound
+	oREsult, err = f.alloc.GetRefs(remotepath, "", "", "", "", "regular", level, 1)
+	if err == nil && len(oREsult.Refs) > 0 && oREsult.Refs[0].Type == fileref.DIRECTORY {
+		// Directory still appears (eventual consistency); try delete again
+		_ = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
+	}
+
+	return nil
 }
 
 type Object struct {
@@ -493,46 +765,26 @@ func (o *Object) String() string {
 	if o == nil {
 		return "<nil>"
 	}
-
 	return o.Remote()
 }
 
 // trimLeadingPath removes the leading root path from the full path to produce a relative path.
-//
-// Parameters:
-//   - fullPath: the complete absolute path of the object
-//   - root: the base path configured for the Fs instance
-//
-// Behavior:
-//   - Ensures both fullPath and root are normalized using path.Clean()
-//   - If root is "/", the function simply trims the leading "/" from fullPath
-//   - If root is a subdirectory, it trims the root prefix + "/" from the fullPath
-//
-// Returns:
-//   - A path relative to the root
 func trimLeadingPath(fullPath, root string) string {
-	// Ensure both root and fullPath are normalized and prefixed with a slash
 	root = path.Clean("/" + root)
 	fullPath = path.Clean(fullPath)
 
 	if root == "/" {
-		// If root is "/", trim leading slash only
 		return strings.TrimPrefix(fullPath, "/")
 	}
-	// Remove the root prefix (plus one trailing slash) from the full path
 	return strings.TrimPrefix(fullPath, root+"/")
 }
 
-// Remote returns the object’s path relative to the backend’s configured root.
-//
-// This is used by rclone to show the object's name/path from the user's perspective
-// rather than the full internal absolute path.
+// Remote returns the object's path relative to the backend's configured root.
 func (o *Object) Remote() string {
-	return trimLeadingPath(o.remote, o.fs.root)
+	return o.fs.opts.Enc.ToStandardPath(trimLeadingPath(o.remote, o.fs.root))
 }
 
 // ModTime returns the modification date of the file
-// It should return a best guess if one isn't available
 func (o *Object) ModTime(ctx context.Context) time.Time {
 	return o.modTime
 }
@@ -548,7 +800,6 @@ func (o *Object) Fs() fs.Info {
 }
 
 // Hash returns the selected checksum of the file
-// If no checksum is available it returns ""
 func (o *Object) Hash(ctx context.Context, t hash.Type) (_ string, err error) {
 	if t != hash.MD5 {
 		return "", hash.ErrUnsupported
@@ -565,6 +816,11 @@ func (o *Object) Hash(ctx context.Context, t hash.Type) (_ string, err error) {
 // Storable says whether this object can be stored
 func (o *Object) Storable() bool {
 	return true
+}
+
+// MimeType returns the content type of the Object if known
+func (o *Object) MimeType(ctx context.Context) string {
+	return o.mimeType
 }
 
 // SetModTime sets the metadata on the object to set the modification date
@@ -593,25 +849,45 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		default:
 			if option.Mandatory() {
 				fs.Errorf(o, "Unsupported mandatory option: %v", option)
-
 				return nil, errors.New("unsupported mandatory option")
 			}
-
 		}
 	}
-	return o.fs.alloc.DownloadObject(ctx, o.remote, rangeStart, rangeEnd)
+	// For zero-length files (stored as 32-byte hash), return empty reader
+	if o.size == 0 {
+		return io.NopCloser(strings.NewReader("")), nil
+	}
+
+	// Buffer the entire download while holding the wallet lock.
+	// The SDK's download goroutine signs chunk requests using the active wallet,
+	// so we must keep our wallet active until the download completes.
+	o.fs.activateWallet()
+	reader, err := downloadObjectMem(ctx, o.fs.alloc, o.remote, rangeStart, rangeEnd)
+	if err != nil {
+		o.fs.deactivateWallet()
+		return nil, err
+	}
+	data, err := io.ReadAll(reader)
+	reader.Close()
+	o.fs.deactivateWallet()
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 // Update the object with the contents of the io.Reader, modTime and size
-//
-// If existing is set then it updates the object rather than creating a new one.
-//
-// The new object may have been created if an error is returned.
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (err error) {
+	o.fs.activateWallet()
+	defer o.fs.deactivateWallet()
+	return o.update(ctx, in, src, options...)
+}
+
+// update is the internal version that does not lock the wallet mutex.
+func (o *Object) update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (err error) {
 	for _, option := range options {
 		if option.Mandatory() {
 			fs.Errorf(o.fs, "Unsupported mandatory option: %v", option)
-
 			return errors.New("unsupported mandatory option")
 		}
 	}
@@ -627,6 +903,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		ActualSize: src.Size(),
 		RemoteName: path.Base(o.remote),
 		CustomMeta: string(marshal),
+		MimeType:   fs.MimeType(ctx, src),
 	}
 	isStreamUpload := src.Size() == -1
 	if isStreamUpload {
@@ -646,30 +923,23 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 			sdk.WithEncrypt(o.fs.opts.Encrypt),
 		},
 		StreamUpload: isStreamUpload,
-		PreservePath: true,
 	}
 	err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	if err != nil {
+		if strings.Contains(err.Error(), "No data to upload") {
+			return fs.ErrorCantUploadEmptyFiles
+		}
 		return err
 	}
 	o.modTime = modified
 	o.size = rb.size
 	o.encrypted = o.fs.opts.Encrypt
 
-	return nil
+	// Refresh metadata from server to get correct hash and mime type
+	return o.readMetaData(ctx)
 }
 
 func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpdate bool) (err error) {
-	// If the file size is 0, we return an error
-	if !toUpdate && src.Size() == 0 {
-		return fs.ErrorCantUploadEmptyFiles
-	}
-
-	//Validate if the path is a valid UTF-8 string
-	if !isValidUTF8Path(o.remote) {
-		return fmt.Errorf("invalid UTF-8 characters in path: %s", o.remote)
-	}
-
 	mp := make(map[string]string)
 	modified := src.ModTime(ctx)
 	mp["rclone:mtime"] = modified.Format(time.RFC3339)
@@ -688,9 +958,29 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 	isStreamUpload := src.Size() == -1
 	if isStreamUpload {
 		fileMeta.ActualSize = 0
+		// Peek the reader: if empty, use non-stream mode (SDK handles zero-byte non-stream uploads)
+		peekBuf := make([]byte, 1)
+		n, peekErr := in.Read(peekBuf)
+		if n == 0 && (peekErr == io.EOF || peekErr == nil) {
+			isStreamUpload = false
+		} else if n > 0 {
+			in = io.MultiReader(bytes.NewReader(peekBuf[:n]), in)
+		}
+	}
+	// Async pool: the caller's `in` may be closed after put() returns, but
+	// the worker reads asynchronously. Drain the source into memory here
+	// so the worker has an independent reader. Cost: src.Size() bytes of
+	// transient memory per in-flight op (capped by rclone --transfers).
+	// For 100×10MB with --transfers=20: ~200 MB peak.
+	buf, err := io.ReadAll(in)
+	if err != nil {
+		return fmt.Errorf("buffer input for async pool: %w", err)
+	}
+	if isStreamUpload && fileMeta.ActualSize == 0 {
+		fileMeta.ActualSize = int64(len(buf))
 	}
 	rb := &ReaderBytes{
-		reader: in,
+		reader: bytes.NewReader(buf),
 	}
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationInsert,
@@ -703,7 +993,6 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 			sdk.WithEncrypt(o.fs.opts.Encrypt),
 		},
 		StreamUpload: isStreamUpload,
-		PreservePath: true,
 	}
 	if toUpdate {
 		opRequest.OperationType = constants.FileOperationUpdate
@@ -714,109 +1003,70 @@ func (o *Object) put(ctx context.Context, in io.Reader, src fs.ObjectInfo, toUpd
 		return errors.New("filesystem not initialized")
 	}
 
-	// If the batcher is enabled, we commit the operation through the batcher
-	if o.fs.batcher.Batching() {
-		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
+	// Ensure parent directories exist (SDK does not auto-create them)
+	if !toUpdate {
+		if err := o.fs.ensureParentDirs(o.remote); err != nil {
+			log.Printf("Warning: failed to create parent dirs for %s: %v", o.remote, err)
+		}
+	}
+
+	// Submit to the custom N-worker pool. Dispatcher accumulates ops by
+	// count/bytes/timeout; each worker commits a batch via a single
+	// DoMultiOperation (= 1 WM commit amortized across the batch).
+	if o.fs.pool != nil {
+		err = o.fs.pool.submit(opRequest, fileMeta.ActualSize)
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
 	}
 
 	if err != nil {
+		// SDK returns "No data to upload" for zero-byte streams
+		if strings.Contains(err.Error(), "No data to upload") {
+			return fs.ErrorCantUploadEmptyFiles
+		}
 		log.Printf("Failed to upload to %s: %v", o.remote, err)
 		return err
 	}
 
 	o.modTime = modified
-	o.size = rb.size
+	o.size = fileMeta.ActualSize
+	// Cache src md5 so rclone's post-put Hash() verify doesn't race the
+	// async pool worker (otherwise dst.Hash returns "" -> "md5 hashes differ"
+	// and rclone retries — burning seconds per file).
+	hsum := md5.Sum(buf)
+	o.md5 = hex.EncodeToString(hsum[:])
 	o.encrypted = o.fs.opts.Encrypt
 	o.mimeType = fileMeta.MimeType
 	return nil
 }
 
-// Move moves a file from one location to another within the same remote.
-//
-// It constructs an SDK move operation, optionally batching it if the batcher is enabled.
-// Returns a new object pointing to the destination if the move is successful.
-// Move performs move operation using FileOpertaionMove of GoSDK: A metadata-only move, using blobber-native logic
-func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	// Type assert the source object to our backend-specific type
-	srcObj, ok := src.(*Object)
-	if !ok {
-		return nil, errors.New("invalid object type")
-	}
-
-	// Construct absolute destination path
-	dstPath := path.Join("/", f.root, remote) // e.g., /destination/file.extension
-	dstDir := path.Dir(dstPath)               // e.g., /destination
-	dstName := path.Base(dstPath)             // e.g., file.extension
-
-	// Build the move operation request for the SDK
-	opRequest := sdk.OperationRequest{
-		OperationType: constants.FileOperationMove,
-		RemotePath:    srcObj.remote, // Full source path, e.g., /directory/file.extension
-		DestPath:      dstDir,        // Target directory path
-		DestName:      dstName,       // Target file name
-		PreservePath:  true,          // Preserve the original path of the file
-	}
-
-	// filesystem check
-	if f == nil || f.alloc == nil {
-		return nil, errors.New("filesystem not initialized")
-	}
-
-	var err error
-	// If batching is enabled, defer execution via the batcher
-	if f.batcher.Batching() {
-		_, err = f.batcher.Commit(ctx, srcObj.remote, opRequest)
-	} else {
-		// Otherwise, perform the move operation immediately
-		err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	// Return a new Object representing the destination path
-	newObj := &Object{
-		fs:     f,
-		remote: dstPath,
-	}
-	err = newObj.readMetaData(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return newObj, nil
-}
-
 // Remove an object
 func (o *Object) Remove(ctx context.Context) (err error) {
+	o.fs.activateWallet()
+	defer o.fs.deactivateWallet()
+	return o.remove(ctx)
+}
+
+// remove is the internal version that does not lock the wallet mutex.
+func (o *Object) remove(ctx context.Context) (err error) {
 	opRequest := sdk.OperationRequest{
 		OperationType: constants.FileOperationDelete,
 		RemotePath:    o.remote,
-		PreservePath:  true,
 	}
 
-	// filesystem check
 	if o.fs == nil || o.fs.alloc == nil {
 		return errors.New("filesystem not initialized")
 	}
 
-	// If batcher is enabled, we commit the operation through the batcher
 	if o.fs.batcher.Batching() {
 		_, err = o.fs.batcher.Commit(ctx, o.remote, opRequest)
-		if err != nil {
-			log.Printf("Failed to remove %s: %v", o.remote, err)
-			return err
-		}
 	} else {
 		err = o.fs.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-		if err != nil {
-			log.Printf("Failed to remove %s: %v", o.remote, err)
-			return err
-		}
 	}
-	return nil
+	if err != nil {
+		log.Printf("Failed to remove %s: %v", o.remote, err)
+	}
+	return err
 }
 
 func (o *Object) readMetaData(ctx context.Context) (err error) {
@@ -829,6 +1079,9 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 		return fs.ErrorObjectNotFound
 	}
 	ref := oREsult.Refs[0]
+	if ref.Type == fileref.DIRECTORY {
+		return fs.ErrorIsDir
+	}
 	modTime := ref.UpdatedAt.ToTime()
 	mp := make(map[string]string)
 	if ref.CustomMeta != "" {
@@ -838,7 +1091,6 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 		}
 		t, ok := mp["rclone:mtime"]
 		if ok {
-			// try to parse the time
 			tm, err := time.Parse(time.RFC3339, t)
 			if err == nil {
 				modTime = tm
@@ -851,9 +1103,10 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 	o.md5 = ref.ActualFileHash
 	o.mimeType = ref.MimeType
 
-	//If the file size is 0, we set the md5 to the default value
-	if o.size == 0 {
+	// SDK stores 0-byte files as 32-byte MD5 hash string; report true size
+	if o.md5 == empty_string_md5_hash || o.size == 0 {
 		o.md5 = empty_string_md5_hash
+		o.size = 0
 	}
 	return nil
 }
@@ -869,7 +1122,6 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 	modTime := ref.UpdatedAt.ToTime()
 	t, ok := mp["rclone:mtime"]
 	if ok {
-		// try to parse the time
 		tm, err := time.Parse(time.RFC3339, t)
 		if err == nil {
 			modTime = tm
@@ -883,70 +1135,69 @@ func (o *Object) readFromRef(ref *sdk.ORef) error {
 	o.md5 = ref.ActualFileHash
 	o.mimeType = ref.MimeType
 
-	//If the file size is 0, we set the md5 to the default value
-	if o.size == 0 {
+	// SDK stores 0-byte files as 32-byte MD5 hash string; report true size
+	if o.md5 == empty_string_md5_hash || o.size == 0 {
 		o.md5 = empty_string_md5_hash
+		o.size = 0
 	}
 	return nil
 }
 
-// Copy implements the fs.Fs Copy interface method.
-// It performs a server-side copy of the source object to the specified destination path.
-//
-// Parameters:
-//   - ctx: context for the operation (used for cancellation/deadlines)
-//   - src: the source fs.Object to be copied (must be of type *Object)
-//   - remote: the target relative path within the destination backend
-//
-// Returns:
-//   - a new fs.Object representing the copied file
-//   - an error if the operation fails
-func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	// Type assert the source object to our custom Object type
-	srcZus, ok := src.(*Object)
-	if !ok {
-		return nil, errors.New("invalid source object type")
-	}
+// Note: Server-side Copy and Move are not implemented because the Züs SDK's
+// copy operation does not support overwriting existing files, and move has
+// consistency issues with path resolution.
+// rclone will automatically fall back to download+re-upload for copy,
+// and copy+delete for move.
 
-	// Build the full destination path from root and remote
-	dstPath := path.Join("/", f.root, remote)
-	dstPath = path.Clean(dstPath)
+// ListR lists the objects and directories of the Fs starting from dir recursively.
+func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	f.activateWallet()
+	defer f.deactivateWallet()
+	return f.listR(ctx, dir, callback)
+}
 
-	// Extract directory and file name from the destination path
-	dstDir := path.Dir(dstPath)
-	dstName := path.Base(dstPath)
-
-	// Construct the SDK operation request for copying
-	opRequest := sdk.OperationRequest{
-		OperationType: constants.FileOperationCopy,
-		RemotePath:    srcZus.remote, // full source path from original Fs
-		DestPath:      dstDir,
-		DestName:      dstName,
-		PreservePath:  true,
-	}
-
-	var err error
-	// Use batcher if enabled, otherwise perform direct operation
-	if f.batcher.Batching() {
-		_, err = f.batcher.Commit(ctx, srcZus.remote, opRequest)
-	} else {
-		err = f.alloc.DoMultiOperation([]sdk.OperationRequest{opRequest})
-	}
+func (f *Fs) listR(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	entries, err := f.list(ctx, dir)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	// Create and initialize the new Object representing the copied file
-	newObj := &Object{
-		fs:     f,
-		remote: dstPath,
+	var dirs []string
+	for _, entry := range entries {
+		if d, ok := entry.(fs.Directory); ok {
+			dirs = append(dirs, d.Remote())
+		}
 	}
-	err = newObj.readMetaData(ctx)
+	err = callback(entries)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	for _, d := range dirs {
+		err = f.listR(ctx, d, callback)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return newObj, nil
+// Note: DirMove is not implemented because the Züs SDK's directory move
+// operation can leave the allocation's write marker in an inconsistent state.
+// rclone will automatically fall back to file-by-file copy+delete.
+
+// About gets quota information from the Fs
+func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
+	total := f.alloc.Size
+	var used int64
+	stats := f.alloc.GetStats()
+	if stats != nil {
+		used = stats.UsedSize
+	}
+	free := total - used
+	return &fs.Usage{
+		Total: &total,
+		Used:  &used,
+		Free:  &free,
+	}, nil
 }
 
 type ReaderBytes struct {
@@ -970,3 +1221,90 @@ func getDefaultConfigDir() (string, error) {
 
 	return configDir, nil
 }
+
+// Check interfaces
+var (
+	_ fs.Fs        = (*Fs)(nil)
+	_ fs.Purger  = (*Fs)(nil)
+	_ fs.ListRer = (*Fs)(nil)
+	_ fs.Abouter = (*Fs)(nil)
+	_ fs.Object    = (*Object)(nil)
+	_ fs.MimeTyper = (*Object)(nil)
+)
+
+
+// downloadObjectMem downloads remotePath into an in-memory buffer via
+// DownloadFileToFileHandler + sys.MemFile (which gosdk natively detects and
+// uses via WriteAt, parallel blobber fan-out). The async download is made
+// synchronous by a StatusCallback that signals Completed/Error.
+//
+// Range semantics match rclone's fs.RangeOption:
+//   - startByte < 0 && endByte >= 0 => "trailing endByte bytes" (suffix)
+//   - endByte < 0 or endByte < startByte => "from startByte to EOF"
+//   - otherwise inclusive [startByte, endByte]
+func downloadObjectMem(ctx context.Context, a *sdk.Allocation, remotePath string, startByte, endByte int64) (io.ReadCloser, error) {
+	mf := &sys.MemFile{Name: path.Base(remotePath)}
+	cb := &sdkDLDone{done: make(chan struct{}, 1)}
+	if err := a.DownloadFileToFileHandler(mf, remotePath, true, cb, true); err != nil {
+		return nil, err
+	}
+	select {
+	case <-cb.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if cb.err != nil {
+		return nil, cb.err
+	}
+	buf := mf.Buffer
+	size := int64(len(buf))
+	var lo, hi int64
+	switch {
+	case startByte < 0 && endByte >= 0:
+		lo = size - endByte
+		if lo < 0 {
+			lo = 0
+		}
+		hi = size
+	case startByte < 0:
+		lo, hi = 0, size
+	case endByte < 0 || endByte < startByte:
+		lo, hi = startByte, size
+	default:
+		lo, hi = startByte, endByte+1
+	}
+	if lo > size {
+		lo = size
+	}
+	if hi > size {
+		hi = size
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	return io.NopCloser(bytes.NewReader(buf[lo:hi])), nil
+}
+
+// sdkDLDone implements sdk.StatusCallback and signals completion on a channel.
+type sdkDLDone struct {
+	done chan struct{}
+	err  error
+}
+
+func (c *sdkDLDone) Started(allocationID, filePath string, op, totalBytes int) {}
+func (c *sdkDLDone) InProgress(allocationID, filePath string, op, completedBytes int, data []byte) {
+}
+func (c *sdkDLDone) Error(allocationID, filePath string, op int, err error) {
+	c.err = err
+	select {
+	case c.done <- struct{}{}:
+	default:
+	}
+}
+func (c *sdkDLDone) Completed(allocationID, filePath, filename, mimetype string, size, op int) {
+	select {
+	case c.done <- struct{}{}:
+	default:
+	}
+}
+func (c *sdkDLDone) RepairCompleted(filesRepaired int) {}
