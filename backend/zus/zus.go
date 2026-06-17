@@ -179,21 +179,21 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		allocationID := strings.Map(removeWhitespace, string(allocBytes))
 
 		if len(allocationID) != 64 {
-			return nil, fmt.Errorf("allocation id has length %d, should be 64", len(allocationID))
+			return nil, fmt.Errorf("invalid allocation ID: expect 64 characters but got %d. Please check allocation.txt in %s for extra spaces, newlines, or incorrect values.", len(allocationID))
 		}
 		f.opts.AllocationID = allocationID
 	}
 
 	cfg, err := conf.LoadConfigFile(filepath.Join(f.opts.ConfigDir, "config.yaml"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load config.yaml from %s: %w", f.opts.ConfigDir, err)
 	}
 	var walletInfo string
 	walletFile := filepath.Join(f.opts.ConfigDir, "wallet.json")
 
 	walletBytes, err := os.ReadFile(walletFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read wallet.json from %s: %w", walletFile, err)
 	}
 	walletInfo = string(walletBytes)
 	err = client.InitSDK("{}", cfg.BlockWorker, cfg.ChainID, cfg.SignatureScheme, 0, true, cfg.MinSubmit, cfg.MinConfirmation, cfg.ConfirmationChainLength, cfg.SharderConsensous)
